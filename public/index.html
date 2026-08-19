@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dundee Timetable Clash Checker</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">University of Dundee</p>
+          <h1>Timetable Clash Checker</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="secondary-button" id="loadDundeeButton" type="button" title="Fetch Dundee timetable">
+            Fetch Dundee
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="schedule-area" aria-label="Selected timetable">
+          <div class="summary-band">
+            <div>
+              <span class="metric-value" id="selectedCount">0</span>
+              <span class="metric-label">selected</span>
+            </div>
+            <div>
+              <span class="metric-value" id="classCount">0</span>
+              <span class="metric-label">classes</span>
+            </div>
+            <div class="clash-metric" id="clashMetric">
+              <span class="metric-value" id="clashCount">0</span>
+              <span class="metric-label">clashes</span>
+            </div>
+            <div class="data-status" id="dataStatus">Sample timetable loaded</div>
+          </div>
+
+          <div class="clash-list" id="clashList" hidden></div>
+
+          <div class="semester-groups" id="semesterGroups"></div>
+        </section>
+
+        <aside class="module-panel" aria-label="Modules">
+          <div class="module-panel-header">
+            <div>
+              <p class="eyebrow">Modules</p>
+            </div>
+            <div class="module-actions">
+              <button class="icon-button" id="selectAllButton" type="button" title="Select all modules">All</button>
+              <button class="icon-button" id="clearButton" type="button" title="Clear modules">None</button>
+            </div>
+          </div>
+
+          <label class="search-box">
+            <span>Search</span>
+            <input id="moduleSearch" type="search" placeholder="Code or name" />
+          </label>
+
+          <div class="module-list" id="moduleList"></div>
+        </aside>
+      </main>
+
+      <div class="modal-backdrop" id="dundeeModal" hidden>
+        <section class="login-modal" role="dialog" aria-modal="true" aria-labelledby="dundeeLoginTitle">
+          <div class="modal-header">
+            <div>
+              <p class="eyebrow">Dundee Timetable</p>
+              <h2 id="dundeeLoginTitle">Fetch Modules</h2>
+            </div>
+            <button class="icon-button" id="closeDundeeModal" type="button" title="Close">Close</button>
+          </div>
+          <form id="dundeeLoginForm">
+            <label>
+              Username
+              <input id="dundeeUsername" name="username" autocomplete="username" placeholder="Student ID or DUNDEE\\username" required />
+            </label>
+            <label>
+              Password
+              <input id="dundeePassword" name="password" type="password" autocomplete="current-password" required />
+            </label>
+            <label>
+              Source URL
+              <input
+                id="dundeeUrl"
+                name="url"
+                type="url"
+                value="https://timetable.dundee.ac.uk/Scientia/SWS/Dundee2627/"
+                required
+              />
+            </label>
+            <label>
+              Limit modules (leave blank for all — can be slow)
+              <input id="dundeeLimit" name="limit" type="number" min="1" step="1" placeholder="e.g. 5" />
+            </label>
+            <label class="checkbox-field">
+              <input id="dundeeDebug" name="debug" type="checkbox" />
+              Save raw HTML for inspection (debug-output/)
+            </label>
+            <div class="credential-note">
+              Credentials are sent only to this local app for the scrape and are not saved. Bare usernames are tried as DUNDEE\\username.
+            </div>
+            <div class="import-actions">
+              <button class="primary-button" type="submit">Fetch All Modules</button>
+              <button class="secondary-button" id="cancelDundeeLogin" type="button">Cancel</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

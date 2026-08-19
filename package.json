@@ -1,0 +1,10 @@
+{
+  "name": "dundee-timetable-viewer",
+  "version": "1.0.0",
+  "description": "A module clash checker for University of Dundee timetable data.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "private": true
+}

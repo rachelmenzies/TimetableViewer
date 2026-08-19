@@ -1,0 +1,144 @@
+{
+  "scrapedAt": "2026-08-19T09:00:00.000Z",
+  "modules": [
+    {
+      "id": "cs41003",
+      "code": "CS41003",
+      "name": "Data Visualisation"
+    },
+    {
+      "id": "cs42002",
+      "code": "CS42002",
+      "name": "Contemporary UX and Interactions"
+    },
+    {
+      "id": "cs41004",
+      "code": "CS41004",
+      "name": "Image and Natural Language Processing"
+    },
+    {
+      "id": "cs42003",
+      "code": "CS42003",
+      "name": "Advanced Big Data Analysis"
+    },
+    {
+      "id": "cs41005",
+      "code": "CS41005",
+      "name": "Programming Language Design and Implementation"
+    }
+  ],
+  "classes": [
+    {
+      "id": "cs41003-lecture-1",
+      "moduleId": "cs41003",
+      "moduleCode": "CS41003",
+      "title": "Data Visualisation",
+      "type": "Lecture",
+      "day": "Monday",
+      "date": "2026-09-28",
+      "start": "09:00",
+      "end": "11:00",
+      "location": "Queen Mother Building",
+      "staff": "School of Science and Engineering",
+      "weeks": "1-11"
+    },
+    {
+      "id": "cs41003-lab-1",
+      "moduleId": "cs41003",
+      "moduleCode": "CS41003",
+      "title": "Visualisation Studio",
+      "type": "Lab",
+      "day": "Wednesday",
+      "date": "2026-09-30",
+      "start": "14:00",
+      "end": "16:00",
+      "location": "QMB Lab",
+      "staff": "",
+      "weeks": "1-11"
+    },
+    {
+      "id": "cs42002-seminar-1",
+      "moduleId": "cs42002",
+      "moduleCode": "CS42002",
+      "title": "UX Research Seminar",
+      "type": "Seminar",
+      "day": "Monday",
+      "date": "2026-09-28",
+      "start": "10:00",
+      "end": "12:00",
+      "location": "Dalhousie Building",
+      "staff": "",
+      "weeks": "1-10"
+    },
+    {
+      "id": "cs42002-workshop-1",
+      "moduleId": "cs42002",
+      "moduleCode": "CS42002",
+      "title": "Interaction Critique",
+      "type": "Workshop",
+      "day": "Thursday",
+      "date": "2026-10-01",
+      "start": "11:00",
+      "end": "13:00",
+      "location": "QMB Studio",
+      "staff": "",
+      "weeks": "2-10"
+    },
+    {
+      "id": "cs41004-lecture-1",
+      "moduleId": "cs41004",
+      "moduleCode": "CS41004",
+      "title": "Image and NLP",
+      "type": "Lecture",
+      "day": "Tuesday",
+      "date": "2026-09-29",
+      "start": "13:00",
+      "end": "15:00",
+      "location": "Tower Building",
+      "staff": "",
+      "weeks": "1-11"
+    },
+    {
+      "id": "cs41004-lab-1",
+      "moduleId": "cs41004",
+      "moduleCode": "CS41004",
+      "title": "Model Lab",
+      "type": "Lab",
+      "day": "Friday",
+      "date": "2026-10-02",
+      "start": "10:00",
+      "end": "12:00",
+      "location": "QMB Lab",
+      "staff": "",
+      "weeks": "1-11"
+    },
+    {
+      "id": "cs42003-lecture-1",
+      "moduleId": "cs42003",
+      "moduleCode": "CS42003",
+      "title": "Big Data Systems",
+      "type": "Lecture",
+      "day": "Wednesday",
+      "date": "2026-09-30",
+      "start": "15:00",
+      "end": "17:00",
+      "location": "Fulton Building",
+      "staff": "",
+      "weeks": "1-11"
+    },
+    {
+      "id": "cs41005-lecture-1",
+      "moduleId": "cs41005",
+      "moduleCode": "CS41005",
+      "title": "Languages and Compilers",
+      "type": "Lecture",
+      "day": "Friday",
+      "date": "2026-10-02",
+      "start": "09:00",
+      "end": "11:00",
+      "location": "Dalhousie Building",
+      "staff": "",
+      "weeks": "1-11"
+    }
+  ]
+}
