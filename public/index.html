@@ -73,6 +73,7 @@
             <button class="icon-button" id="closeDundeeModal" type="button" title="Close">Close</button>
           </div>
           <form id="dundeeLoginForm">
+            <div class="modal-error" id="dundeeModalError" hidden></div>
             <label>
               Username
               <input id="dundeeUsername" name="username" autocomplete="username" placeholder="Student ID or DUNDEE\\username" required />
@@ -91,20 +92,47 @@
                 required
               />
             </label>
-            <label>
-              Limit modules (leave blank for all — can be slow)
-              <input id="dundeeLimit" name="limit" type="number" min="1" step="1" placeholder="e.g. 5" />
-            </label>
-            <label class="checkbox-field">
-              <input id="dundeeDebug" name="debug" type="checkbox" />
-              Save raw HTML for inspection (debug-output/)
-            </label>
             <div class="credential-note">
-              Credentials are sent only to this local app for the scrape and are not saved. Bare usernames are tried as DUNDEE\\username.
+              Credentials are sent only to this local app and are not saved. Bare usernames are tried as DUNDEE\\username.
             </div>
             <div class="import-actions">
-              <button class="primary-button" type="submit">Fetch All Modules</button>
+              <button class="primary-button" type="submit">Find Modules</button>
               <button class="secondary-button" id="cancelDundeeLogin" type="button">Cancel</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <div class="modal-backdrop" id="prefixModal" hidden>
+        <section class="login-modal" role="dialog" aria-modal="true" aria-labelledby="prefixModalTitle">
+          <div class="modal-header">
+            <div>
+              <p class="eyebrow">Dundee Timetable</p>
+              <h2 id="prefixModalTitle">Select Modules</h2>
+            </div>
+            <button class="icon-button" id="closePrefixModal" type="button" title="Close">Close</button>
+          </div>
+          <form id="prefixForm">
+            <div class="modal-error" id="prefixModalError" hidden></div>
+            <div class="prefix-header">
+              <span id="prefixSummary">0 modules selected</span>
+              <div class="module-actions">
+                <button class="icon-button" id="prefixAllButton" type="button" title="Select all prefixes">All</button>
+                <button class="icon-button" id="prefixNoneButton" type="button" title="Clear prefixes">None</button>
+              </div>
+            </div>
+            <div class="prefix-list" id="prefixList"></div>
+            <label>
+              Limit modules (optional, applied after prefix selection)
+              <input id="prefixLimit" name="limit" type="number" min="1" step="1" placeholder="e.g. 20" />
+            </label>
+            <label class="checkbox-field">
+              <input id="prefixDebug" name="debug" type="checkbox" />
+              Save raw HTML for inspection (debug-output/)
+            </label>
+            <div class="import-actions">
+              <button class="primary-button" type="submit">Fetch Selected Modules</button>
+              <button class="secondary-button" id="cancelPrefixModal" type="button">Cancel</button>
             </div>
           </form>
         </section>

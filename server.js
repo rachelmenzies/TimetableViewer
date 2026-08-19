@@ -671,7 +671,27 @@ async function fetchModuleTimetable(defaultUrl, auth, fields, moduleCode, debug)
 
 const DEBUG_DIR = path.join(__dirname, "debug-output");
 
-async function scrapeDundeeTimetable({ username, password, url, limit, debug }) {
+async function discoverDundeeModules({ username, password, url }) {
+  if (!username || !password) {
+    throw new Error("Username and password are required for Dundee timetable scraping.");
+  }
+
+  const defaultUrl = defaultPageUrl(url);
+  const cookieFile = path.join(os.tmpdir(), `dundee-timetable-${process.pid}-${Date.now()}.cookies`);
+  const auth = { username: normaliseDundeeUsername(username), password, cookieFile };
+
+  try {
+    const tab = await getModulesTab(defaultUrl, auth);
+    if (!tab.modules.length) {
+      throw new Error("No modules were found in Dundee's module picker.");
+    }
+    return { modules: tab.modules, source: defaultUrl };
+  } finally {
+    fs.rm(cookieFile, { force: true }, () => {});
+  }
+}
+
+async function scrapeDundeeTimetable({ username, password, url, limit, debug, moduleCodes }) {
   if (!username || !password) {
     throw new Error("Username and password are required for Dundee timetable scraping.");
   }
@@ -687,7 +707,13 @@ async function scrapeDundeeTimetable({ username, password, url, limit, debug }) 
       throw new Error("No modules were found in Dundee's module picker.");
     }
 
-    const selectedModules = Number(limit) > 0 ? modules.slice(0, Number(limit)) : modules;
+    let candidateModules = modules;
+    if (Array.isArray(moduleCodes) && moduleCodes.length) {
+      const wanted = new Set(moduleCodes);
+      candidateModules = modules.filter((module) => wanted.has(module.code));
+    }
+
+    const selectedModules = Number(limit) > 0 ? candidateModules.slice(0, Number(limit)) : candidateModules;
     const records = [];
     const failures = [];
     const fields = { ...tab.fields };
@@ -776,20 +802,36 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && parsed.pathname === "/api/dundee-modules") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      console.log(`[dundee-modules] discovering modules url=${payload.url || DEFAULT_DUNDEE_URL}`);
+      const data = await discoverDundeeModules({
+        username: payload.username,
+        password: payload.password,
+        url: payload.url || DEFAULT_DUNDEE_URL
+      });
+      console.log(`[dundee-modules] found ${data.modules.length} modules`);
+      sendJson(res, 200, data);
+      return;
+    }
+
     if (req.method === "POST" && parsed.pathname === "/api/scrape-dundee") {
       const body = await readBody(req);
       const payload = JSON.parse(body || "{}");
+      const moduleCodes = Array.isArray(payload.moduleCodes) ? payload.moduleCodes : undefined;
       console.log(
-        `[scrape-dundee] starting: limit=${payload.limit ?? "(none)"} debug=${Boolean(payload.debug)} url=${
-          payload.url || DEFAULT_DUNDEE_URL
-        }`
+        `[scrape-dundee] starting: limit=${payload.limit ?? "(none)"} modules=${
+          moduleCodes ? moduleCodes.length : "(all)"
+        } debug=${Boolean(payload.debug)} url=${payload.url || DEFAULT_DUNDEE_URL}`
       );
       const data = await scrapeDundeeTimetable({
         username: payload.username,
         password: payload.password,
         url: payload.url || DEFAULT_DUNDEE_URL,
         limit: payload.limit,
-        debug: payload.debug
+        debug: payload.debug,
+        moduleCodes
       });
       console.log(
         `[scrape-dundee] done: ${data.classes.length} classes from ${data.scrapedModules}/${data.availableModules} modules, ${data.failures.length} failures`

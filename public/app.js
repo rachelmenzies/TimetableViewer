@@ -3,6 +3,7 @@ const SEMESTERS = ["SEM1", "SEM2", "SUM"];
 const START_HOUR = 9;
 const END_HOUR = 18;
 const STORAGE_KEY = "dundee-timetable-selected-modules";
+const DEFAULT_PREFIXES = ["AC", "CS", "MA"];
 
 const state = {
   modules: [],
@@ -12,6 +13,13 @@ const state = {
   clashGroups: [],
   search: ""
 };
+
+// Held only in memory between the two fetch steps (module discovery, then the
+// actual scrape of the modules the user picked) so the password isn't asked
+// for twice. Cleared as soon as either step finishes or is cancelled.
+let pendingAuth = null;
+let discoveredModules = [];
+let selectedPrefixes = new Set();
 
 const elements = {
   loadDundeeButton: document.querySelector("#loadDundeeButton"),
@@ -27,14 +35,24 @@ const elements = {
   selectAllButton: document.querySelector("#selectAllButton"),
   clearButton: document.querySelector("#clearButton"),
   dundeeModal: document.querySelector("#dundeeModal"),
+  dundeeModalError: document.querySelector("#dundeeModalError"),
   dundeeLoginForm: document.querySelector("#dundeeLoginForm"),
   closeDundeeModal: document.querySelector("#closeDundeeModal"),
   cancelDundeeLogin: document.querySelector("#cancelDundeeLogin"),
   dundeeUsername: document.querySelector("#dundeeUsername"),
   dundeePassword: document.querySelector("#dundeePassword"),
   dundeeUrl: document.querySelector("#dundeeUrl"),
-  dundeeLimit: document.querySelector("#dundeeLimit"),
-  dundeeDebug: document.querySelector("#dundeeDebug")
+  prefixModal: document.querySelector("#prefixModal"),
+  prefixModalError: document.querySelector("#prefixModalError"),
+  prefixForm: document.querySelector("#prefixForm"),
+  prefixSummary: document.querySelector("#prefixSummary"),
+  prefixList: document.querySelector("#prefixList"),
+  prefixAllButton: document.querySelector("#prefixAllButton"),
+  prefixNoneButton: document.querySelector("#prefixNoneButton"),
+  prefixLimit: document.querySelector("#prefixLimit"),
+  prefixDebug: document.querySelector("#prefixDebug"),
+  closePrefixModal: document.querySelector("#closePrefixModal"),
+  cancelPrefixModal: document.querySelector("#cancelPrefixModal")
 };
 
 function minutes(time) {
@@ -49,6 +67,11 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function prefixOf(moduleCode) {
+  const match = String(moduleCode || "").match(/^[A-Z]+/);
+  return match ? match[0] : "OTHER";
 }
 
 function semesterOf(moduleCode) {
@@ -303,7 +326,18 @@ async function loadSample() {
   setData(data, "Sample timetable loaded");
 }
 
+function showModalError(el, message) {
+  el.textContent = message;
+  el.hidden = false;
+}
+
+function clearModalError(el) {
+  el.hidden = true;
+  el.textContent = "";
+}
+
 function openDundeeModal() {
+  clearModalError(elements.dundeeModalError);
   elements.dundeeModal.hidden = false;
   elements.dundeeUsername.focus();
 }
@@ -311,21 +345,120 @@ function openDundeeModal() {
 function closeDundeeModal() {
   elements.dundeeModal.hidden = true;
   elements.dundeePassword.value = "";
+  clearModalError(elements.dundeeModalError);
 }
 
-async function fetchDundee(event) {
+let prefixCounts = new Map();
+
+function updatePrefixSummary() {
+  const moduleTotal = [...selectedPrefixes].reduce((total, prefix) => total + (prefixCounts.get(prefix) || 0), 0);
+  elements.prefixSummary.textContent = `${moduleTotal} module${moduleTotal === 1 ? "" : "s"} selected across ${
+    selectedPrefixes.size
+  } prefix${selectedPrefixes.size === 1 ? "" : "es"}`;
+}
+
+function renderPrefixList() {
+  const prefixes = [...prefixCounts.keys()].sort();
+  elements.prefixList.innerHTML = "";
+  prefixes.forEach((prefix) => {
+    const count = prefixCounts.get(prefix);
+    const item = document.createElement("div");
+    item.className = "prefix-item";
+    item.innerHTML = `
+      <label>
+        <input type="checkbox" data-prefix="${escapeHtml(prefix)}" ${selectedPrefixes.has(prefix) ? "checked" : ""} />
+        ${escapeHtml(prefix)}
+      </label>
+      <span class="prefix-count">${count} module${count === 1 ? "" : "s"}</span>
+    `;
+    elements.prefixList.appendChild(item);
+  });
+  updatePrefixSummary();
+}
+
+function openPrefixModal() {
+  prefixCounts = new Map();
+  discoveredModules.forEach((module) => {
+    const prefix = prefixOf(module.code);
+    prefixCounts.set(prefix, (prefixCounts.get(prefix) || 0) + 1);
+  });
+  selectedPrefixes = new Set([...prefixCounts.keys()].filter((prefix) => DEFAULT_PREFIXES.includes(prefix)));
+  clearModalError(elements.prefixModalError);
+  renderPrefixList();
+  elements.prefixModal.hidden = false;
+}
+
+function closePrefixModal() {
+  elements.prefixModal.hidden = true;
+  clearModalError(elements.prefixModalError);
+  pendingAuth = null;
+  discoveredModules = [];
+}
+
+async function discoverModules(event) {
   event.preventDefault();
-  elements.dataStatus.textContent = "Fetching Dundee timetable. This can take a few minutes...";
+  clearModalError(elements.dundeeModalError);
+  const submitButton = elements.dundeeLoginForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = "Finding modules...";
+  try {
+    const username = elements.dundeeUsername.value.trim();
+    const password = elements.dundeePassword.value;
+    const url = elements.dundeeUrl.value.trim();
+    const response = await fetch("/api/dundee-modules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, url })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not fetch the module list.");
+
+    pendingAuth = { username, password, url };
+    discoveredModules = data.modules || [];
+    elements.dundeeModal.hidden = true;
+    elements.dundeePassword.value = "";
+    openPrefixModal();
+  } catch (error) {
+    showModalError(elements.dundeeModalError, error.message);
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = "Find Modules";
+  }
+}
+
+async function fetchSelectedModules(event) {
+  event.preventDefault();
+  clearModalError(elements.prefixModalError);
+
+  if (!selectedPrefixes.size) {
+    showModalError(elements.prefixModalError, "Select at least one prefix.");
+    return;
+  }
+  if (!pendingAuth) {
+    showModalError(elements.prefixModalError, "Session expired — please log in again.");
+    return;
+  }
+
+  const moduleCodes = discoveredModules
+    .filter((module) => selectedPrefixes.has(prefixOf(module.code)))
+    .map((module) => module.code);
+
+  const submitButton = elements.prefixForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = "Fetching...";
+  elements.dataStatus.textContent = `Fetching ${moduleCodes.length} Dundee modules. This can take a while...`;
+
   try {
     const response = await fetch("/api/scrape-dundee", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        username: elements.dundeeUsername.value.trim(),
-        password: elements.dundeePassword.value,
-        url: elements.dundeeUrl.value.trim(),
-        limit: elements.dundeeLimit.value ? Number(elements.dundeeLimit.value) : undefined,
-        debug: elements.dundeeDebug.checked
+        username: pendingAuth.username,
+        password: pendingAuth.password,
+        url: pendingAuth.url,
+        moduleCodes,
+        limit: elements.prefixLimit.value ? Number(elements.prefixLimit.value) : undefined,
+        debug: elements.prefixDebug.checked
       })
     });
     const data = await response.json();
@@ -336,21 +469,51 @@ async function fetchDundee(event) {
         : "";
     const debugText = data.debugFiles && data.debugFiles.length ? `; saved raw HTML to debug-output/` : "";
     setData(data, `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules${failedText}${debugText}`);
-    closeDundeeModal();
+    elements.prefixModal.hidden = true;
+    pendingAuth = null;
+    discoveredModules = [];
   } catch (error) {
+    showModalError(elements.prefixModalError, error.message);
     elements.dataStatus.textContent = error.message;
   } finally {
-    elements.dundeePassword.value = "";
+    submitButton.disabled = false;
+    submitButton.textContent = "Fetch Selected Modules";
   }
 }
 
 elements.loadDundeeButton.addEventListener("click", openDundeeModal);
-elements.dundeeLoginForm.addEventListener("submit", fetchDundee);
+elements.dundeeLoginForm.addEventListener("submit", discoverModules);
 elements.closeDundeeModal.addEventListener("click", closeDundeeModal);
 elements.cancelDundeeLogin.addEventListener("click", closeDundeeModal);
 elements.dundeeModal.addEventListener("click", (event) => {
   if (event.target === elements.dundeeModal) closeDundeeModal();
 });
+
+elements.prefixForm.addEventListener("submit", fetchSelectedModules);
+elements.closePrefixModal.addEventListener("click", closePrefixModal);
+elements.cancelPrefixModal.addEventListener("click", closePrefixModal);
+elements.prefixModal.addEventListener("click", (event) => {
+  if (event.target === elements.prefixModal) closePrefixModal();
+});
+elements.prefixList.addEventListener("change", (event) => {
+  const prefix = event.target.dataset.prefix;
+  if (!prefix) return;
+  if (event.target.checked) {
+    selectedPrefixes.add(prefix);
+  } else {
+    selectedPrefixes.delete(prefix);
+  }
+  updatePrefixSummary();
+});
+elements.prefixAllButton.addEventListener("click", () => {
+  selectedPrefixes = new Set(prefixCounts.keys());
+  renderPrefixList();
+});
+elements.prefixNoneButton.addEventListener("click", () => {
+  selectedPrefixes = new Set();
+  renderPrefixList();
+});
+
 elements.moduleSearch.addEventListener("input", (event) => {
   state.search = event.target.value;
   renderModules();
