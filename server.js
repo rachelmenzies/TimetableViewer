@@ -614,15 +614,14 @@ function parseScientiaModuleTimetable(html, fallbackModule) {
   return sessions;
 }
 
-async function fetchModuleTimetable(defaultUrl, auth, moduleCode, debug) {
-  const tab = await getModulesTab(defaultUrl, auth);
+async function postGetTimetable(defaultUrl, auth, fields, moduleCode, debug) {
   const body = formEncode([
     ["__EVENTTARGET", ""],
     ["__EVENTARGUMENT", ""],
-    ["__VIEWSTATE", tab.fields.__VIEWSTATE],
-    ["__VIEWSTATEGENERATOR", tab.fields.__VIEWSTATEGENERATOR],
-    ["__EVENTVALIDATION", tab.fields.__EVENTVALIDATION],
-    ["__LASTFOCUS", tab.fields.__LASTFOCUS],
+    ["__VIEWSTATE", fields.__VIEWSTATE],
+    ["__VIEWSTATEGENERATOR", fields.__VIEWSTATEGENERATOR],
+    ["__EVENTVALIDATION", fields.__EVENTVALIDATION],
+    ["__LASTFOCUS", fields.__LASTFOCUS],
     ["tLinkType", "modules"],
     ["dlObject", moduleCode],
     ["lbWeeks", Array.from({ length: 52 }, (_, index) => String(index + 1)).join(";")],
@@ -656,6 +655,20 @@ async function fetchModuleTimetable(defaultUrl, auth, moduleCode, debug) {
   return response.body;
 }
 
+// `fields` (the modules-tab VIEWSTATE snapshot) is shared and reused across every module in a
+// scrape instead of being re-fetched per module (a ~3x reduction in requests). If a particular
+// module's postback is rejected (a stale/invalidated VIEWSTATE), the snapshot is refreshed once
+// and the caller's shared `fields` object is updated in place so later modules benefit too.
+async function fetchModuleTimetable(defaultUrl, auth, fields, moduleCode, debug) {
+  try {
+    return await postGetTimetable(defaultUrl, auth, fields, moduleCode, debug);
+  } catch (error) {
+    const freshTab = await getModulesTab(defaultUrl, auth);
+    Object.assign(fields, freshTab.fields);
+    return await postGetTimetable(defaultUrl, auth, fields, moduleCode, debug);
+  }
+}
+
 const DEBUG_DIR = path.join(__dirname, "debug-output");
 
 async function scrapeDundeeTimetable({ username, password, url, limit, debug }) {
@@ -677,10 +690,11 @@ async function scrapeDundeeTimetable({ username, password, url, limit, debug }) 
     const selectedModules = Number(limit) > 0 ? modules.slice(0, Number(limit)) : modules;
     const records = [];
     const failures = [];
+    const fields = { ...tab.fields };
 
     for (const module of selectedModules) {
       try {
-        const html = await fetchModuleTimetable(defaultUrl, auth, module.code, debug);
+        const html = await fetchModuleTimetable(defaultUrl, auth, fields, module.code, debug);
         records.push(...parseScientiaModuleTimetable(html, module));
       } catch (error) {
         console.error(`[scrape-dundee] ${module.code} failed: ${error.message}`);
