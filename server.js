@@ -415,7 +415,7 @@ function normaliseRecords(records) {
     const moduleCode =
       pick(lower, ["module", "module code", "subject", "subject code", "code"]) || inferModuleCode(rawText);
     const moduleName =
-      pick(lower, ["module name", "subject name", "name"]) ||
+      pick(lower, ["module name", "modulename", "subject name", "name"]) ||
       pick(lower, ["module", "subject"]) ||
       moduleCode ||
       "Unknown module";
@@ -471,6 +471,14 @@ function parseTimetablePayload(payload) {
   }
 
   if (/BEGIN:VCALENDAR/i.test(trimmed)) return normaliseRecords(recordsFromIcs(trimmed));
+
+  const looksLikeScientiaPage =
+    /class=(["'])[^"']*\blabelone\b[^"']*\1/i.test(trimmed) && /class=(["'])[^"']*\bspreadsheet\b[^"']*\1/i.test(trimmed);
+  if (looksLikeScientiaPage) {
+    const sessions = parseScientiaModuleTimetable(trimmed, { code: "", name: "" });
+    if (sessions.length) return normaliseRecords(sessions);
+  }
+
   if (/<(?:html|table|tr|td|th)\b/i.test(trimmed)) return normaliseRecords(recordsFromHtml(trimmed));
   return normaliseRecords(recordsFromCsv(trimmed));
 }
@@ -573,11 +581,15 @@ async function getModulesTab(defaultUrl, auth) {
   };
 }
 
+// Scientia's "TextSpreadsheet" report exports several different layouts depending on how
+// it was generated (a single module's page has no Module column since the whole page is
+// already scoped to it; a Programme of Study page lists many modules and adds one). Columns
+// are read by their header text rather than a fixed position/count so any such layout works.
 function parseScientiaModuleTimetable(html, fallbackModule) {
   const text = stripTags(html);
   const moduleMatch = text.match(/Module:\s*(\S+)\s*-\s*(.+?)\s*Weeks:/i);
-  const moduleCode = moduleMatch ? moduleMatch[1].trim() : fallbackModule.code;
-  const moduleTitle = moduleMatch ? moduleMatch[2].trim() : fallbackModule.name;
+  const pageModuleCode = moduleMatch ? moduleMatch[1].trim() : fallbackModule.code;
+  const pageModuleTitle = moduleMatch ? moduleMatch[2].trim() : fallbackModule.name;
   const sessions = [];
 
   const dayBlocks = String(html || "").matchAll(
@@ -589,24 +601,52 @@ function parseScientiaModuleTimetable(html, fallbackModule) {
     if (!["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].includes(day)) continue;
 
     const rows = block[4].match(/<tr[\s\S]*?<\/tr>/gi) || [];
+    let headerIndex = null;
+
     rows.forEach((row) => {
-      if (/columnTitles/i.test(row)) return;
       const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => stripTags(match[1]));
-      if (cells.length < 8) return;
-      const [activity, type, start, end, duration, weeks, staff, room] = cells;
+      if (!cells.length) return;
+
+      if (/columnTitles/i.test(row)) {
+        headerIndex = {};
+        cells.forEach((cell, index) => {
+          headerIndex[cell.trim().toLowerCase()] = index;
+        });
+        return;
+      }
+      if (!headerIndex) return;
+
+      const cellAt = (name) => {
+        const index = headerIndex[name];
+        return index == null ? "" : (cells[index] || "").trim();
+      };
+
+      const activity = cellAt("activity");
+      const start = cellAt("start");
+      const end = cellAt("end");
       if (!start || !end) return;
+
+      // On a multi-module page (e.g. Programme of Study) the Activity cell is prefixed with
+      // the module code to disambiguate ("CS11002-SEM1-A LabPracA /ALL"); that's redundant
+      // once split into its own field, so it's stripped for a cleaner display title.
+      const rowModuleCode = inferModuleCode(activity) || pageModuleCode;
+      const activityLabel = rowModuleCode
+        ? activity.replace(new RegExp(`^${rowModuleCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`), "").trim() ||
+          activity
+        : activity;
+
       sessions.push({
-        module: moduleCode,
-        moduleName: moduleTitle,
+        module: rowModuleCode,
+        moduleName: cellAt("module") || pageModuleTitle,
         day,
-        activity,
-        type,
+        activity: activityLabel,
+        type: cellAt("type"),
         start,
         end,
-        duration,
-        weeks,
-        staff,
-        room
+        duration: cellAt("duration"),
+        weeks: cellAt("weeks"),
+        staff: cellAt("staff"),
+        room: cellAt("room")
       });
     });
   }

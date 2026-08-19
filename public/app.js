@@ -23,6 +23,8 @@ let selectedPrefixes = new Set();
 
 const elements = {
   loadDundeeButton: document.querySelector("#loadDundeeButton"),
+  uploadButton: document.querySelector("#uploadButton"),
+  uploadInput: document.querySelector("#uploadInput"),
   selectedCount: document.querySelector("#selectedCount"),
   classCount: document.querySelector("#classCount"),
   clashCount: document.querySelector("#clashCount"),
@@ -135,12 +137,18 @@ function restoreSelection() {
   }
 }
 
-function setData(data, status) {
+function setData(data, status, options = {}) {
+  // A fresh upload or fetch always fully replaces whatever was loaded before —
+  // no merging with prior data, and (unless explicitly restoring, i.e. only on
+  // the initial page load) no carrying over a previous session's selection.
   state.modules = Array.isArray(data.modules) ? data.modules : [];
   state.classes = Array.isArray(data.classes) ? data.classes : [];
   state.selected = new Set();
+  state.search = "";
+  elements.moduleSearch.value = "";
 
-  if (!restoreSelection()) {
+  const restored = options.restoreSelection !== false && restoreSelection();
+  if (!restored) {
     state.modules.slice(0, 2).forEach((module) => state.selected.add(module.id));
   }
 
@@ -326,6 +334,28 @@ async function loadSample() {
   setData(data, "Sample timetable loaded");
 }
 
+async function handleUpload(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+
+  elements.dataStatus.textContent = `Importing ${file.name}...`;
+  try {
+    const text = await file.text();
+    const response = await fetch("/api/import", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      body: text
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Import failed.");
+    if (!data.classes.length) throw new Error("No classes were found in that file.");
+    setData(data, `Imported ${data.classes.length} classes from ${file.name}`, { restoreSelection: false });
+  } catch (error) {
+    elements.dataStatus.textContent = error.message;
+  }
+}
+
 function showModalError(el, message) {
   el.textContent = message;
   el.hidden = false;
@@ -468,7 +498,11 @@ async function fetchSelectedModules(event) {
         ? `; ${data.failures.length} modules failed (${data.failures[0].module}: ${data.failures[0].error})`
         : "";
     const debugText = data.debugFiles && data.debugFiles.length ? `; saved raw HTML to debug-output/` : "";
-    setData(data, `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules${failedText}${debugText}`);
+    setData(
+      data,
+      `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules${failedText}${debugText}`,
+      { restoreSelection: false }
+    );
     elements.prefixModal.hidden = true;
     pendingAuth = null;
     discoveredModules = [];
@@ -482,6 +516,8 @@ async function fetchSelectedModules(event) {
 }
 
 elements.loadDundeeButton.addEventListener("click", openDundeeModal);
+elements.uploadButton.addEventListener("click", () => elements.uploadInput.click());
+elements.uploadInput.addEventListener("change", handleUpload);
 elements.dundeeLoginForm.addEventListener("submit", discoverModules);
 elements.closeDundeeModal.addEventListener("click", closeDundeeModal);
 elements.cancelDundeeLogin.addEventListener("click", closeDundeeModal);
