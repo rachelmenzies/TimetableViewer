@@ -233,8 +233,11 @@ function inferDay(text, date) {
   return days[(day + 6) % 7] || "";
 }
 
+// Co-taught modules appear as slash-joined codes (e.g. "CS31000/CS41000") — the whole
+// compound code is matched so neither side is dropped when identifying a module.
 function inferModuleCode(text) {
-  const match = String(text || "").match(/\b[A-Z]{2,4}\d{5}(?:-[A-Z0-9]+)*\b/);
+  const code = "[A-Z]{2,4}\\d{5}(?:-[A-Z0-9]+)*";
+  const match = String(text || "").match(new RegExp(`\\b${code}(?:\\/${code})*\\b`));
   return match ? match[0] : "";
 }
 
@@ -581,6 +584,53 @@ async function getModulesTab(defaultUrl, auth) {
   };
 }
 
+// The "Programmes of Study" tab isn't verified against a live Dundee page — unlike
+// LinkBtn_modules (known-working), this tries a handful of plausible EVENTTARGET names for
+// Scientia's programme/student-set picker until one produces the same dlObject select the
+// modules tab uses. If Dundee's actual tab id isn't in this list, every attempt fails and the
+// caller gets a clear "Programmes tab not found" error rather than a silent wrong result.
+const PROGRAMME_TAB_TARGETS = [
+  "LinkBtn_programmesofstudy",
+  "LinkBtn_programmes",
+  "LinkBtn_studentsets",
+  "LinkBtn_courses"
+];
+
+async function getProgrammesTab(defaultUrl, auth) {
+  const first = await requestDundeeText(defaultUrl, auth);
+  assertAuthenticated(first);
+  const firstFields = extractHiddenFields(first.body);
+
+  for (const eventTarget of PROGRAMME_TAB_TARGETS) {
+    try {
+      const switchBody = formEncode([
+        ["__EVENTTARGET", eventTarget],
+        ["__EVENTARGUMENT", ""],
+        ["__VIEWSTATE", firstFields.__VIEWSTATE],
+        ["__VIEWSTATEGENERATOR", firstFields.__VIEWSTATEGENERATOR],
+        ["__EVENTVALIDATION", firstFields.__EVENTVALIDATION],
+        ["__LASTFOCUS", firstFields.__LASTFOCUS]
+      ]);
+      const second = await requestDundeeText(defaultUrl, { ...auth, method: "POST", body: switchBody });
+      assertAuthenticated(second);
+      if (/name=["']dlObject["']|id=["']dlObject["']/i.test(second.body)) {
+        return {
+          html: second.body,
+          fields: extractHiddenFields(second.body),
+          programmes: extractModuleOptions(second.body),
+          tLinkType: eventTarget.replace(/^LinkBtn_/, "")
+        };
+      }
+    } catch {
+      // Try the next candidate tab id.
+    }
+  }
+
+  throw new Error(
+    "Could not find a Programmes of Study tab on Dundee's timetable page — the live page may label it differently than expected."
+  );
+}
+
 // Scientia's "TextSpreadsheet" report exports several different layouts depending on how
 // it was generated (a single module's page has no Module column since the whole page is
 // already scoped to it; a Programme of Study page lists many modules and adds one). Columns
@@ -711,7 +761,47 @@ async function fetchModuleTimetable(defaultUrl, auth, fields, moduleCode, debug)
 
 const DEBUG_DIR = path.join(__dirname, "debug-output");
 
-async function discoverDundeeModules({ username, password, url }) {
+// Mirrors postGetTimetable, but for a programme/student-set object rather than a module. The
+// RadioType custom report name ("SWSCUST Programme TextSpreadsheet") follows the same naming
+// pattern as the module report but, like the tab id above, is a best-effort guess — it hasn't
+// been confirmed against Dundee's actual Scientia configuration.
+async function postGetProgrammeTimetable(defaultUrl, auth, fields, tLinkType, programmeCode, debug) {
+  const body = formEncode([
+    ["__EVENTTARGET", ""],
+    ["__EVENTARGUMENT", ""],
+    ["__VIEWSTATE", fields.__VIEWSTATE],
+    ["__VIEWSTATEGENERATOR", fields.__VIEWSTATEGENERATOR],
+    ["__EVENTVALIDATION", fields.__EVENTVALIDATION],
+    ["__LASTFOCUS", fields.__LASTFOCUS],
+    ["tLinkType", tLinkType],
+    ["dlObject", programmeCode],
+    ["lbWeeks", Array.from({ length: 52 }, (_, index) => String(index + 1)).join(";")],
+    ["lbDays", "1-5"],
+    ["dlPeriod", "1-28"],
+    ["RadioType", "TextSpreadsheet;swsurl;SWSCUST Programme TextSpreadsheet"],
+    ["bGetTimetable", "View Timetable"]
+  ]);
+
+  let response = await requestDundeeText(defaultUrl, { ...auth, method: "POST", body, trace: debug });
+  let trace = response.trace || "";
+
+  if (response.statusCode >= 300 && response.statusCode < 400 && response.redirectUrl) {
+    const nextUrl = new URL(response.redirectUrl, defaultUrl).toString();
+    response = await requestDundeeText(nextUrl, { ...auth, method: "GET", trace: debug });
+    trace += `\n----- followed redirect to ${nextUrl} -----\n${response.trace || ""}`;
+  }
+
+  if (debug) {
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DEBUG_DIR, `${slugify(programmeCode)}.html`), response.body);
+    fs.writeFileSync(path.join(DEBUG_DIR, `${slugify(programmeCode)}.trace.txt`), scrubCredentials(trace));
+  }
+
+  assertAuthenticated(response);
+  return response.body;
+}
+
+async function discoverDundeeProgrammes({ username, password, url }) {
   if (!username || !password) {
     throw new Error("Username and password are required for Dundee timetable scraping.");
   }
@@ -721,17 +811,48 @@ async function discoverDundeeModules({ username, password, url }) {
   const auth = { username: normaliseDundeeUsername(username), password, cookieFile };
 
   try {
-    const tab = await getModulesTab(defaultUrl, auth);
-    if (!tab.modules.length) {
-      throw new Error("No modules were found in Dundee's module picker.");
+    const tab = await getProgrammesTab(defaultUrl, auth);
+    if (!tab.programmes.length) {
+      throw new Error("No programmes were found in Dundee's programme picker.");
     }
-    return { modules: tab.modules, source: defaultUrl };
+    return { programmes: tab.programmes, source: defaultUrl };
   } finally {
     fs.rm(cookieFile, { force: true }, () => {});
   }
 }
 
-async function scrapeDundeeTimetable({ username, password, url, limit, debug, moduleCodes }) {
+async function scrapeDundeeProgramme({ username, password, url, programmeCode, debug }) {
+  if (!username || !password) {
+    throw new Error("Username and password are required for Dundee timetable scraping.");
+  }
+  if (!programmeCode) {
+    throw new Error("A programme code is required.");
+  }
+
+  const defaultUrl = defaultPageUrl(url);
+  const cookieFile = path.join(os.tmpdir(), `dundee-timetable-${process.pid}-${Date.now()}.cookies`);
+  const auth = { username: normaliseDundeeUsername(username), password, cookieFile };
+
+  try {
+    const tab = await getProgrammesTab(defaultUrl, auth);
+    const programme = tab.programmes.find((item) => item.code === programmeCode);
+    if (!programme) {
+      throw new Error(`Programme ${programmeCode} was not found in Dundee's programme picker.`);
+    }
+
+    const html = await postGetProgrammeTimetable(defaultUrl, auth, tab.fields, tab.tLinkType, programmeCode, debug);
+    const records = parseScientiaModuleTimetable(html, programme);
+    const data = normaliseRecords(records);
+    data.source = defaultUrl;
+    data.programme = programme;
+    if (debug) data.debugFiles = [DEBUG_DIR];
+    return data;
+  } finally {
+    fs.rm(cookieFile, { force: true }, () => {});
+  }
+}
+
+async function scrapeDundeeTimetable({ username, password, url, limit, debug, moduleCodes, onProgress }) {
   if (!username || !password) {
     throw new Error("Username and password are required for Dundee timetable scraping.");
   }
@@ -758,6 +879,9 @@ async function scrapeDundeeTimetable({ username, password, url, limit, debug, mo
     const failures = [];
     const fields = { ...tab.fields };
 
+    if (onProgress) onProgress({ type: "start", total: selectedModules.length });
+
+    let completed = 0;
     for (const module of selectedModules) {
       try {
         const html = await fetchModuleTimetable(defaultUrl, auth, fields, module.code, debug);
@@ -766,11 +890,13 @@ async function scrapeDundeeTimetable({ username, password, url, limit, debug, mo
         console.error(`[scrape-dundee] ${module.code} failed: ${error.message}`);
         failures.push({ module: module.code, error: error.message });
       }
+      completed += 1;
+      if (onProgress) onProgress({ type: "progress", completed, total: selectedModules.length, module: module.code });
     }
 
     const data = normaliseRecords(records);
     const knownIds = new Set(data.modules.map((module) => module.id));
-    modules.forEach((module) => {
+    selectedModules.forEach((module) => {
       if (!knownIds.has(module.id)) {
         data.modules.push(module);
       }
@@ -842,20 +968,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && parsed.pathname === "/api/dundee-modules") {
-      const body = await readBody(req);
-      const payload = JSON.parse(body || "{}");
-      console.log(`[dundee-modules] discovering modules url=${payload.url || DEFAULT_DUNDEE_URL}`);
-      const data = await discoverDundeeModules({
-        username: payload.username,
-        password: payload.password,
-        url: payload.url || DEFAULT_DUNDEE_URL
-      });
-      console.log(`[dundee-modules] found ${data.modules.length} modules`);
-      sendJson(res, 200, data);
-      return;
-    }
-
     if (req.method === "POST" && parsed.pathname === "/api/scrape-dundee") {
       const body = await readBody(req);
       const payload = JSON.parse(body || "{}");
@@ -865,17 +977,68 @@ const server = http.createServer(async (req, res) => {
           moduleCodes ? moduleCodes.length : "(all)"
         } debug=${Boolean(payload.debug)} url=${payload.url || DEFAULT_DUNDEE_URL}`
       );
-      const data = await scrapeDundeeTimetable({
+
+      // Streamed as newline-delimited JSON rather than one final response body, so the client
+      // can render a real fill-as-you-go progress bar across the (often slow, one-request-per-
+      // module) scrape instead of an indeterminate spinner. Once headers are sent, any failure
+      // must be reported as a "type":"error" line here — throwing would hit the outer handler's
+      // catch, which calls res.writeHead again and crashes with "headers already sent".
+      res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" });
+      const send = (event) => res.write(`${JSON.stringify(event)}\n`);
+
+      try {
+        const data = await scrapeDundeeTimetable({
+          username: payload.username,
+          password: payload.password,
+          url: payload.url || DEFAULT_DUNDEE_URL,
+          limit: payload.limit,
+          debug: payload.debug,
+          moduleCodes,
+          onProgress: send
+        });
+        console.log(
+          `[scrape-dundee] done: ${data.classes.length} classes from ${data.scrapedModules}/${data.availableModules} modules, ${data.failures.length} failures`
+        );
+        send({ type: "done", data });
+      } catch (error) {
+        console.error(`[scrape-dundee] failed: ${error.message}`);
+        send({ type: "error", error: error.message || "Timetable fetch failed." });
+      } finally {
+        res.end();
+      }
+      return;
+    }
+
+    if (req.method === "POST" && parsed.pathname === "/api/dundee-programmes") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      console.log(`[dundee-programmes] discovering programmes url=${payload.url || DEFAULT_DUNDEE_URL}`);
+      const data = await discoverDundeeProgrammes({
+        username: payload.username,
+        password: payload.password,
+        url: payload.url || DEFAULT_DUNDEE_URL
+      });
+      console.log(`[dundee-programmes] found ${data.programmes.length} programmes`);
+      sendJson(res, 200, data);
+      return;
+    }
+
+    if (req.method === "POST" && parsed.pathname === "/api/scrape-dundee-programme") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      console.log(
+        `[scrape-dundee-programme] programme=${payload.programmeCode} debug=${Boolean(payload.debug)} url=${
+          payload.url || DEFAULT_DUNDEE_URL
+        }`
+      );
+      const data = await scrapeDundeeProgramme({
         username: payload.username,
         password: payload.password,
         url: payload.url || DEFAULT_DUNDEE_URL,
-        limit: payload.limit,
-        debug: payload.debug,
-        moduleCodes
+        programmeCode: payload.programmeCode,
+        debug: payload.debug
       });
-      console.log(
-        `[scrape-dundee] done: ${data.classes.length} classes from ${data.scrapedModules}/${data.availableModules} modules, ${data.failures.length} failures`
-      );
+      console.log(`[scrape-dundee-programme] done: ${data.classes.length} classes, ${data.modules.length} modules`);
       sendJson(res, 200, data);
       return;
     }

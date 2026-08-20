@@ -9,23 +9,41 @@
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">University of Dundee</p>
-          <h1>Timetable Clash Checker</h1>
+        <div class="brand">
+          <h1>Timetable Checker</h1>
         </div>
         <div class="topbar-actions">
-          <button class="secondary-button" id="loadDundeeButton" type="button" title="Fetch Dundee timetable">
-            Fetch Dundee
+          <button class="secondary-button" id="fetchDataButton" type="button" title="Fetch every module and the programme list from Dundee">
+            Fetch Data
           </button>
           <button class="secondary-button" id="uploadButton" type="button" title="Upload a saved Dundee timetable HTML page">
             Upload
           </button>
           <input id="uploadInput" type="file" accept=".html,.htm,text/html" hidden />
+          <button class="secondary-button" id="clearTimetableButton" type="button" title="Remove all modules from the timetable (keeps loaded data)">
+            Clear timetable
+          </button>
         </div>
       </header>
 
       <main class="workspace">
         <section class="schedule-area" aria-label="Selected timetable">
+          <div class="programme-bar">
+            <label class="programme-search">
+              <span>Programme</span>
+              <input
+                id="programmeSearch"
+                type="text"
+                list="programmeOptions"
+                placeholder="Select Programme"
+                autocomplete="off"
+                disabled
+              />
+              <datalist id="programmeOptions"></datalist>
+            </label>
+            <button class="primary-button" id="programmeSelectButton" type="button" disabled>Select</button>
+          </div>
+
           <div class="summary-band">
             <div>
               <span class="metric-value" id="selectedCount">0</span>
@@ -39,7 +57,6 @@
               <span class="metric-value" id="clashCount">0</span>
               <span class="metric-label">clashes</span>
             </div>
-            <div class="data-status" id="dataStatus">Sample timetable loaded</div>
           </div>
 
           <div class="clash-list" id="clashList" hidden></div>
@@ -49,12 +66,9 @@
 
         <aside class="module-panel" aria-label="Modules">
           <div class="module-panel-header">
-            <div>
-              <p class="eyebrow">Modules</p>
-            </div>
             <div class="module-actions">
-              <button class="icon-button" id="selectAllButton" type="button" title="Select all modules">All</button>
-              <button class="icon-button" id="clearButton" type="button" title="Clear modules">None</button>
+              <button class="icon-button" id="selectAllButton" type="button" title="Add all modules to the timetable">All</button>
+              <button class="icon-button" id="clearButton" type="button" title="Remove all modules from the timetable">None</button>
             </div>
           </div>
 
@@ -70,21 +84,20 @@
       <div class="modal-backdrop" id="dundeeModal" hidden>
         <section class="login-modal" role="dialog" aria-modal="true" aria-labelledby="dundeeLoginTitle">
           <div class="modal-header">
-            <div>
-              <p class="eyebrow">Dundee Timetable</p>
-              <h2 id="dundeeLoginTitle">Fetch Modules</h2>
-            </div>
+            <h2 id="dundeeLoginTitle">Fetch Data</h2>
             <button class="icon-button" id="closeDundeeModal" type="button" title="Close">Close</button>
           </div>
           <form id="dundeeLoginForm">
-            <div class="modal-error" id="dundeeModalError" hidden></div>
             <label>
               Username
               <input id="dundeeUsername" name="username" autocomplete="username" placeholder="Student ID or DUNDEE\\username" required />
             </label>
             <label>
               Password
-              <input id="dundeePassword" name="password" type="password" autocomplete="current-password" required />
+              <div class="password-field">
+                <input id="dundeePassword" name="password" type="password" autocomplete="current-password" required />
+                <button class="icon-button" id="togglePassword" type="button" title="Show password">Show</button>
+              </div>
             </label>
             <label>
               Source URL
@@ -96,52 +109,39 @@
                 required
               />
             </label>
+            <label>
+              Limit modules (optional, for testing)
+              <input id="dundeeLimit" name="limit" type="number" min="1" step="1" placeholder="e.g. 20" />
+            </label>
+            <label class="checkbox-field">
+              <input id="dundeeDebug" name="debug" type="checkbox" />
+              Save raw HTML for inspection (debug-output/)
+            </label>
             <div class="credential-note">
               Credentials are sent only to this local app and are not saved. Bare usernames are tried as DUNDEE\\username.
+              Pulls every module and the programme list, so this can take a while.
             </div>
             <div class="import-actions">
-              <button class="primary-button" type="submit">Find Modules</button>
+              <button class="primary-button" type="submit">Fetch Data</button>
               <button class="secondary-button" id="cancelDundeeLogin" type="button">Cancel</button>
             </div>
           </form>
         </section>
       </div>
 
-      <div class="modal-backdrop" id="prefixModal" hidden>
-        <section class="login-modal" role="dialog" aria-modal="true" aria-labelledby="prefixModalTitle">
+      <div class="modal-backdrop" id="progressModal" hidden>
+        <section class="login-modal progress-modal" role="dialog" aria-modal="true" aria-labelledby="progressTitle">
           <div class="modal-header">
-            <div>
-              <p class="eyebrow">Dundee Timetable</p>
-              <h2 id="prefixModalTitle">Select Modules</h2>
-            </div>
-            <button class="icon-button" id="closePrefixModal" type="button" title="Close">Close</button>
+            <h2 id="progressTitle">Fetching Data</h2>
+            <button class="icon-button" id="closeProgressModal" type="button" title="Close">Close</button>
           </div>
-          <form id="prefixForm">
-            <div class="modal-error" id="prefixModalError" hidden></div>
-            <div class="prefix-header">
-              <span id="prefixSummary">0 modules selected</span>
-              <div class="module-actions">
-                <button class="icon-button" id="prefixAllButton" type="button" title="Select all prefixes">All</button>
-                <button class="icon-button" id="prefixNoneButton" type="button" title="Clear prefixes">None</button>
-              </div>
-            </div>
-            <div class="prefix-list" id="prefixList"></div>
-            <label>
-              Limit modules (optional, applied after prefix selection)
-              <input id="prefixLimit" name="limit" type="number" min="1" step="1" placeholder="e.g. 20" />
-            </label>
-            <label class="checkbox-field">
-              <input id="prefixDebug" name="debug" type="checkbox" />
-              Save raw HTML for inspection (debug-output/)
-            </label>
-            <div class="import-actions">
-              <button class="primary-button" type="submit">Fetch Selected Modules</button>
-              <button class="secondary-button" id="cancelPrefixModal" type="button">Cancel</button>
-            </div>
-          </form>
+          <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressBarFill"></div></div>
+          <ul class="progress-log" id="progressLog"></ul>
         </section>
       </div>
     </div>
+
+    <div class="event-tooltip" id="eventTooltip" hidden></div>
 
     <script src="app.js"></script>
   </body>

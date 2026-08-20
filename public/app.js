@@ -3,7 +3,7 @@ const SEMESTERS = ["SEM1", "SEM2", "SUM"];
 const START_HOUR = 9;
 const END_HOUR = 18;
 const STORAGE_KEY = "dundee-timetable-selected-modules";
-const DEFAULT_PREFIXES = ["AC", "CS", "MA"];
+const DATA_STORAGE_KEY = "dundee-timetable-data";
 
 const state = {
   modules: [],
@@ -11,50 +11,52 @@ const state = {
   selected: new Set(),
   clashes: new Set(),
   clashGroups: [],
-  search: ""
+  search: "",
+  // Per-semester selected week (SEM1/SEM2/SUM -> week number); missing/null means "all weeks".
+  weekFilters: {}
 };
 
-// Held only in memory between the two fetch steps (module discovery, then the
-// actual scrape of the modules the user picked) so the password isn't asked
-// for twice. Cleared as soon as either step finishes or is cancelled.
-let pendingAuth = null;
-let discoveredModules = [];
-let selectedPrefixes = new Set();
+// Held only in memory after "Fetch Data" authenticates, so picking several programmes
+// in a row doesn't re-prompt for a password. Reset on page refresh.
+let programmeAuth = null;
+let programmesByLabel = new Map();
 
 const elements = {
-  loadDundeeButton: document.querySelector("#loadDundeeButton"),
+  fetchDataButton: document.querySelector("#fetchDataButton"),
+  programmeSearch: document.querySelector("#programmeSearch"),
+  programmeOptions: document.querySelector("#programmeOptions"),
+  programmeSelectButton: document.querySelector("#programmeSelectButton"),
   uploadButton: document.querySelector("#uploadButton"),
   uploadInput: document.querySelector("#uploadInput"),
   selectedCount: document.querySelector("#selectedCount"),
   classCount: document.querySelector("#classCount"),
   clashCount: document.querySelector("#clashCount"),
   clashMetric: document.querySelector("#clashMetric"),
-  dataStatus: document.querySelector("#dataStatus"),
   clashList: document.querySelector("#clashList"),
   semesterGroups: document.querySelector("#semesterGroups"),
   moduleList: document.querySelector("#moduleList"),
   moduleSearch: document.querySelector("#moduleSearch"),
   selectAllButton: document.querySelector("#selectAllButton"),
   clearButton: document.querySelector("#clearButton"),
+  clearTimetableButton: document.querySelector("#clearTimetableButton"),
   dundeeModal: document.querySelector("#dundeeModal"),
-  dundeeModalError: document.querySelector("#dundeeModalError"),
+  dundeeLoginTitle: document.querySelector("#dundeeLoginTitle"),
   dundeeLoginForm: document.querySelector("#dundeeLoginForm"),
   closeDundeeModal: document.querySelector("#closeDundeeModal"),
   cancelDundeeLogin: document.querySelector("#cancelDundeeLogin"),
   dundeeUsername: document.querySelector("#dundeeUsername"),
   dundeePassword: document.querySelector("#dundeePassword"),
+  togglePassword: document.querySelector("#togglePassword"),
   dundeeUrl: document.querySelector("#dundeeUrl"),
-  prefixModal: document.querySelector("#prefixModal"),
-  prefixModalError: document.querySelector("#prefixModalError"),
-  prefixForm: document.querySelector("#prefixForm"),
-  prefixSummary: document.querySelector("#prefixSummary"),
-  prefixList: document.querySelector("#prefixList"),
-  prefixAllButton: document.querySelector("#prefixAllButton"),
-  prefixNoneButton: document.querySelector("#prefixNoneButton"),
-  prefixLimit: document.querySelector("#prefixLimit"),
-  prefixDebug: document.querySelector("#prefixDebug"),
-  closePrefixModal: document.querySelector("#closePrefixModal"),
-  cancelPrefixModal: document.querySelector("#cancelPrefixModal")
+  dundeeLimit: document.querySelector("#dundeeLimit"),
+  dundeeDebug: document.querySelector("#dundeeDebug"),
+  progressModal: document.querySelector("#progressModal"),
+  progressTitle: document.querySelector("#progressTitle"),
+  progressBar: document.querySelector("#progressBar"),
+  progressBarFill: document.querySelector("#progressBarFill"),
+  progressLog: document.querySelector("#progressLog"),
+  closeProgressModal: document.querySelector("#closeProgressModal"),
+  eventTooltip: document.querySelector("#eventTooltip")
 };
 
 function minutes(time) {
@@ -71,17 +73,13 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function prefixOf(moduleCode) {
-  const match = String(moduleCode || "").match(/^[A-Z]+/);
-  return match ? match[0] : "OTHER";
-}
-
-function semesterOf(moduleCode) {
-  const code = String(moduleCode || "").toUpperCase();
-  if (/SEM.?1/.test(code)) return "SEM1";
-  if (/SEM.?2/.test(code)) return "SEM2";
-  if (/\bSUM/.test(code)) return "SUM";
-  return "SEM1";
+function semesterOf(event) {
+  const weeks = parseWeeks(event.weeks);
+  if (!weeks.size) return "SEM1";
+  const firstWeek = Math.min(...weeks);
+  if (firstWeek <= 11) return "SEM1";
+  if (firstWeek <= 24) return "SEM2";
+  return "SUM";
 }
 
 function moduleFor(id) {
@@ -90,6 +88,39 @@ function moduleFor(id) {
 
 function classCountFor(moduleId) {
   return state.classes.filter((event) => event.moduleId === moduleId).length;
+}
+
+function parseWeeks(weeksText) {
+  const weeks = new Set();
+  String(weeksText || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (range) {
+        const start = Number(range[1]);
+        const end = Number(range[2]);
+        for (let week = Math.min(start, end); week <= Math.max(start, end); week += 1) {
+          weeks.add(week);
+        }
+        return;
+      }
+      const single = part.match(/^(\d+)$/);
+      if (single) weeks.add(Number(single[1]));
+    });
+  return weeks;
+}
+
+function weeksOverlap(weeksA, weeksB) {
+  const a = parseWeeks(weeksA);
+  const b = parseWeeks(weeksB);
+  // If either side has no parseable week info, be conservative and treat it as overlapping.
+  if (!a.size || !b.size) return true;
+  for (const week of a) {
+    if (b.has(week)) return true;
+  }
+  return false;
 }
 
 function findClashes(events) {
@@ -107,6 +138,7 @@ function findClashes(events) {
         const a = dayEvents[index];
         const b = dayEvents[next];
         if (minutes(b.start) >= minutes(a.end)) break;
+        if (!weeksOverlap(a.weeks, b.weeks)) continue;
         clashIds.add(a.id);
         clashIds.add(b.id);
         groups.push([a, b]);
@@ -137,23 +169,45 @@ function restoreSelection() {
   }
 }
 
+function persistData(status) {
+  try {
+    localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify({ modules: state.modules, classes: state.classes, status }));
+  } catch {
+    // Ignore storage errors (e.g. quota exceeded) — persistence is best-effort.
+  }
+}
+
+function restoreData() {
+  const raw = localStorage.getItem(DATA_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed.modules) || !Array.isArray(parsed.classes)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function setData(data, status, options = {}) {
   // A fresh upload or fetch always fully replaces whatever was loaded before —
   // no merging with prior data, and (unless explicitly restoring, i.e. only on
   // the initial page load) no carrying over a previous session's selection.
+  // The timetable otherwise always starts blank: modules are added by clicking them.
   state.modules = Array.isArray(data.modules) ? data.modules : [];
   state.classes = Array.isArray(data.classes) ? data.classes : [];
   state.selected = new Set();
   state.search = "";
+  state.weekFilters = {};
   elements.moduleSearch.value = "";
 
   const restored = options.restoreSelection !== false && restoreSelection();
-  if (!restored) {
-    state.modules.slice(0, 2).forEach((module) => state.selected.add(module.id));
+  if (!restored && options.selectAll) {
+    state.modules.forEach((module) => state.selected.add(module.id));
   }
 
-  elements.dataStatus.textContent = status;
   persistSelection();
+  if (options.persist !== false) persistData(status);
   render();
 }
 
@@ -188,10 +242,81 @@ function timeLabelsHtml() {
   return html;
 }
 
-function renderSemesterBlock(label, events, clashIds) {
+function tooltipRow(label, value) {
+  return value ? `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>` : "";
+}
+
+function showEventTooltip(event, mouseEvent) {
+  const module = moduleFor(event.moduleId);
+  elements.eventTooltip.innerHTML = `
+    <h4>${escapeHtml(event.moduleCode)}</h4>
+    ${module.name ? `<p class="event-tooltip-name">${escapeHtml(module.name)}</p>` : ""}
+    <dl>
+      ${tooltipRow("Title", event.title)}
+      ${tooltipRow("Type", event.type)}
+      ${tooltipRow("Day", event.day)}
+      ${tooltipRow("Time", event.start && event.end ? `${event.start}-${event.end}` : "")}
+      ${tooltipRow("Date", event.date)}
+      ${tooltipRow("Weeks", event.weeks)}
+      ${tooltipRow("Location", event.location)}
+      ${tooltipRow("Staff", event.staff)}
+    </dl>
+  `;
+  elements.eventTooltip.hidden = false;
+  positionEventTooltip(mouseEvent);
+}
+
+function positionEventTooltip(mouseEvent) {
+  if (elements.eventTooltip.hidden) return;
+  const offset = 16;
+  const tooltip = elements.eventTooltip;
+  const maxLeft = window.innerWidth - tooltip.offsetWidth - 8;
+  const maxTop = window.innerHeight - tooltip.offsetHeight - 8;
+  tooltip.style.left = `${Math.min(mouseEvent.clientX + offset, Math.max(8, maxLeft))}px`;
+  tooltip.style.top = `${Math.min(mouseEvent.clientY + offset, Math.max(8, maxTop))}px`;
+}
+
+function hideEventTooltip() {
+  elements.eventTooltip.hidden = true;
+}
+
+function renderSemesterBlock(label, events, clashIds, weeksAvailable, selectedWeek) {
   const block = document.createElement("div");
   block.className = "semester-block";
-  block.innerHTML = `<h3 class="semester-heading">${escapeHtml(label)}</h3>`;
+
+  const heading = document.createElement("div");
+  heading.className = "semester-heading-row";
+
+  const title = document.createElement("h3");
+  title.className = "semester-heading";
+  title.textContent = label;
+  heading.appendChild(title);
+
+  if (weeksAvailable.length) {
+    const weekPicker = document.createElement("div");
+    weekPicker.className = "week-picker";
+
+    const allPill = document.createElement("button");
+    allPill.type = "button";
+    allPill.className = `week-pill${selectedWeek == null ? " is-active" : ""}`;
+    allPill.textContent = "All";
+    allPill.dataset.semester = label;
+    weekPicker.appendChild(allPill);
+
+    weeksAvailable.forEach((week) => {
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = `week-pill${selectedWeek === week ? " is-active" : ""}`;
+      pill.textContent = String(week);
+      pill.dataset.semester = label;
+      pill.dataset.week = String(week);
+      weekPicker.appendChild(pill);
+    });
+
+    heading.appendChild(weekPicker);
+  }
+
+  block.appendChild(heading);
 
   const frame = document.createElement("div");
   frame.className = "timetable-frame";
@@ -230,12 +355,14 @@ function renderSemesterBlock(label, events, clashIds) {
       eventBlock.style.height = `${height}px`;
       eventBlock.style.left = `calc(${left}% + 8px)`;
       eventBlock.style.right = `calc(${100 - left - width}% + 8px)`;
-      eventBlock.title = `${event.moduleCode} ${event.start}-${event.end}`;
       eventBlock.innerHTML = `
         <span class="event-time">${escapeHtml(event.start)}-${escapeHtml(event.end)} · ${escapeHtml(event.moduleCode)}</span>
         <span class="event-title">${escapeHtml(event.title)}</span>
         <span class="event-detail">${escapeHtml([event.type, event.location, event.weeks && `Weeks ${event.weeks}`].filter(Boolean).join(" · "))}</span>
       `;
+      eventBlock.addEventListener("mouseenter", (mouseEvent) => showEventTooltip(event, mouseEvent));
+      eventBlock.addEventListener("mousemove", positionEventTooltip);
+      eventBlock.addEventListener("mouseleave", hideEventTooltip);
       column.appendChild(eventBlock);
     });
 
@@ -247,11 +374,19 @@ function renderSemesterBlock(label, events, clashIds) {
   return block;
 }
 
+function weeksForEvents(events) {
+  const weeks = new Set();
+  events.forEach((event) => {
+    parseWeeks(event.weeks).forEach((week) => weeks.add(week));
+  });
+  return [...weeks].sort((a, b) => a - b);
+}
+
 function renderSchedule() {
   const events = selectedEvents().map((event) => ({ ...event }));
   const buckets = new Map(SEMESTERS.map((label) => [label, []]));
   events.forEach((event) => {
-    buckets.get(semesterOf(event.moduleCode)).push(event);
+    buckets.get(semesterOf(event)).push(event);
   });
 
   const allClashIds = new Set();
@@ -264,8 +399,16 @@ function renderSchedule() {
     const { clashIds, groups } = findClashes(bucketEvents);
     clashIds.forEach((id) => allClashIds.add(id));
     allClashGroups = allClashGroups.concat(groups);
-    layoutEvents(bucketEvents);
-    elements.semesterGroups.appendChild(renderSemesterBlock(label, bucketEvents, clashIds));
+
+    const weeksAvailable = weeksForEvents(bucketEvents);
+    const selectedWeek = state.weekFilters[label] ?? null;
+    const visibleEvents =
+      selectedWeek == null ? bucketEvents : bucketEvents.filter((event) => parseWeeks(event.weeks).has(selectedWeek));
+
+    layoutEvents(visibleEvents);
+    elements.semesterGroups.appendChild(
+      renderSemesterBlock(label, visibleEvents, clashIds, weeksAvailable, selectedWeek)
+    );
   });
 
   state.clashes = allClashIds;
@@ -334,12 +477,75 @@ async function loadSample() {
   setData(data, "Sample timetable loaded");
 }
 
+function loadInitialData() {
+  const persisted = restoreData();
+  if (persisted) {
+    setData(persisted, persisted.status || "Restored previous session", { persist: false });
+    return;
+  }
+  loadSample();
+}
+
+function clearTimetable() {
+  state.selected.clear();
+  persistSelection();
+  render();
+}
+
+let progressHasError = false;
+
+function openProgress(title) {
+  progressHasError = false;
+  elements.progressTitle.textContent = title;
+  elements.progressLog.innerHTML = "";
+  setProgressBusy();
+  elements.progressModal.hidden = false;
+}
+
+// Indeterminate sweep, used while we have no way to know how far through an operation we are
+// (logging in, a single non-looped request like programme discovery).
+function setProgressBusy() {
+  elements.progressBar.className = "progress-bar is-busy";
+  elements.progressBarFill.style.width = "";
+}
+
+// Real fill-as-you-go progress, driven by completed/total counts streamed from the server.
+function setProgressPercent(percent) {
+  elements.progressBar.className = "progress-bar";
+  elements.progressBarFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+}
+
+function logProgress(message, tone = "info") {
+  if (tone === "error") progressHasError = true;
+  const item = document.createElement("li");
+  item.className = `progress-line${tone !== "info" ? ` progress-${tone}` : ""}`;
+  item.textContent = message;
+  elements.progressLog.appendChild(item);
+  elements.progressLog.scrollTop = elements.progressLog.scrollHeight;
+}
+
+function finishProgress(options = {}) {
+  const { autoClose = true } = options;
+  elements.progressBarFill.style.width = "100%";
+  elements.progressBar.className = `progress-bar ${progressHasError ? "is-error" : "is-done"}`;
+  if (autoClose && !progressHasError) {
+    setTimeout(() => {
+      elements.progressModal.hidden = true;
+    }, 1800);
+  }
+}
+
+function closeProgress() {
+  elements.progressModal.hidden = true;
+}
+
 async function handleUpload(event) {
   const file = event.target.files && event.target.files[0];
   event.target.value = "";
   if (!file) return;
 
-  elements.dataStatus.textContent = `Importing ${file.name}...`;
+  openProgress("Importing File");
+  logProgress(`Importing ${file.name}...`);
   try {
     const text = await file.text();
     const response = await fetch("/api/import", {
@@ -350,24 +556,16 @@ async function handleUpload(event) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Import failed.");
     if (!data.classes.length) throw new Error("No classes were found in that file.");
+    logProgress(`Imported ${data.classes.length} classes from ${file.name}.`, "success");
     setData(data, `Imported ${data.classes.length} classes from ${file.name}`, { restoreSelection: false });
+    finishProgress();
   } catch (error) {
-    elements.dataStatus.textContent = error.message;
+    logProgress(error.message, "error");
+    finishProgress({ autoClose: false });
   }
 }
 
-function showModalError(el, message) {
-  el.textContent = message;
-  el.hidden = false;
-}
-
-function clearModalError(el) {
-  el.hidden = true;
-  el.textContent = "";
-}
-
 function openDundeeModal() {
-  clearModalError(elements.dundeeModalError);
   elements.dundeeModal.hidden = false;
   elements.dundeeUsername.focus();
 }
@@ -375,184 +573,207 @@ function openDundeeModal() {
 function closeDundeeModal() {
   elements.dundeeModal.hidden = true;
   elements.dundeePassword.value = "";
-  clearModalError(elements.dundeeModalError);
+  elements.dundeePassword.type = "password";
+  elements.togglePassword.textContent = "Show";
 }
 
-let prefixCounts = new Map();
-
-function updatePrefixSummary() {
-  const moduleTotal = [...selectedPrefixes].reduce((total, prefix) => total + (prefixCounts.get(prefix) || 0), 0);
-  elements.prefixSummary.textContent = `${moduleTotal} module${moduleTotal === 1 ? "" : "s"} selected across ${
-    selectedPrefixes.size
-  } prefix${selectedPrefixes.size === 1 ? "" : "es"}`;
-}
-
-function renderPrefixList() {
-  const prefixes = [...prefixCounts.keys()].sort();
-  elements.prefixList.innerHTML = "";
-  prefixes.forEach((prefix) => {
-    const count = prefixCounts.get(prefix);
-    const item = document.createElement("div");
-    item.className = "prefix-item";
-    item.innerHTML = `
-      <label>
-        <input type="checkbox" data-prefix="${escapeHtml(prefix)}" ${selectedPrefixes.has(prefix) ? "checked" : ""} />
-        ${escapeHtml(prefix)}
-      </label>
-      <span class="prefix-count">${count} module${count === 1 ? "" : "s"}</span>
-    `;
-    elements.prefixList.appendChild(item);
+function populateProgrammeOptions(programmes) {
+  programmesByLabel = new Map();
+  elements.programmeOptions.innerHTML = "";
+  programmes.forEach((programme) => {
+    const label = `${programme.code} — ${programme.name || programme.code}`;
+    programmesByLabel.set(label, programme);
+    const option = document.createElement("option");
+    option.value = label;
+    elements.programmeOptions.appendChild(option);
   });
-  updatePrefixSummary();
+  elements.programmeSearch.disabled = false;
+  elements.programmeSearch.value = "";
+  elements.programmeSelectButton.disabled = programmes.length === 0;
 }
 
-function openPrefixModal() {
-  prefixCounts = new Map();
-  discoveredModules.forEach((module) => {
-    const prefix = prefixOf(module.code);
-    prefixCounts.set(prefix, (prefixCounts.get(prefix) || 0) + 1);
-  });
-  selectedPrefixes = new Set([...prefixCounts.keys()].filter((prefix) => DEFAULT_PREFIXES.includes(prefix)));
-  clearModalError(elements.prefixModalError);
-  renderPrefixList();
-  elements.prefixModal.hidden = false;
-}
+async function selectProgramme() {
+  const programme = programmesByLabel.get(elements.programmeSearch.value.trim());
+  if (!programme) {
+    openProgress("Select Programme");
+    logProgress("Pick a programme from the list first.", "error");
+    finishProgress({ autoClose: false });
+    return;
+  }
+  if (!programmeAuth) {
+    openProgress("Select Programme");
+    logProgress("Session expired — click Fetch Data again.", "error");
+    finishProgress({ autoClose: false });
+    return;
+  }
 
-function closePrefixModal() {
-  elements.prefixModal.hidden = true;
-  clearModalError(elements.prefixModalError);
-  pendingAuth = null;
-  discoveredModules = [];
-}
+  elements.programmeSelectButton.disabled = true;
+  openProgress(`Fetching ${programme.code}`);
+  logProgress(`Fetching activities for ${programme.code}...`);
 
-async function discoverModules(event) {
-  event.preventDefault();
-  clearModalError(elements.dundeeModalError);
-  const submitButton = elements.dundeeLoginForm.querySelector('button[type="submit"]');
-  submitButton.disabled = true;
-  submitButton.textContent = "Finding modules...";
   try {
-    const username = elements.dundeeUsername.value.trim();
-    const password = elements.dundeePassword.value;
-    const url = elements.dundeeUrl.value.trim();
-    const response = await fetch("/api/dundee-modules", {
+    const response = await fetch("/api/scrape-dundee-programme", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, url })
+      body: JSON.stringify({
+        username: programmeAuth.username,
+        password: programmeAuth.password,
+        url: programmeAuth.url,
+        programmeCode: programme.code,
+        debug: elements.dundeeDebug.checked
+      })
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not fetch the module list.");
-
-    pendingAuth = { username, password, url };
-    discoveredModules = data.modules || [];
-    elements.dundeeModal.hidden = true;
-    elements.dundeePassword.value = "";
-    openPrefixModal();
+    if (!response.ok) throw new Error(data.error || "Could not fetch that programme's timetable.");
+    logProgress(`Loaded ${data.classes.length} classes for ${programme.code}.`, "success");
+    setData(data, `Loaded ${data.classes.length} classes for ${programme.code}`, {
+      restoreSelection: false,
+      selectAll: true
+    });
+    finishProgress();
   } catch (error) {
-    showModalError(elements.dundeeModalError, error.message);
+    logProgress(error.message, "error");
+    finishProgress({ autoClose: false });
   } finally {
-    submitButton.disabled = false;
-    submitButton.textContent = "Find Modules";
+    elements.programmeSelectButton.disabled = false;
   }
 }
 
-async function fetchSelectedModules(event) {
+// Reads a newline-delimited JSON stream (one JSON object per line), calling onEvent for each
+// as it arrives — used so the module-scrape progress bar can fill in real time instead of
+// waiting for one big response at the end.
+async function readNdjson(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let done = false;
+  while (!done) {
+    const chunk = await reader.read();
+    done = chunk.done;
+    buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !done });
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) onEvent(JSON.parse(line));
+    }
+  }
+  const trailing = buffer.trim();
+  if (trailing) onEvent(JSON.parse(trailing));
+}
+
+async function submitDundeeLogin(event) {
   event.preventDefault();
-  clearModalError(elements.prefixModalError);
-
-  if (!selectedPrefixes.size) {
-    showModalError(elements.prefixModalError, "Select at least one prefix.");
-    return;
-  }
-  if (!pendingAuth) {
-    showModalError(elements.prefixModalError, "Session expired — please log in again.");
-    return;
-  }
-
-  const moduleCodes = discoveredModules
-    .filter((module) => selectedPrefixes.has(prefixOf(module.code)))
-    .map((module) => module.code);
-
-  const submitButton = elements.prefixForm.querySelector('button[type="submit"]');
+  const submitButton = elements.dundeeLoginForm.querySelector('button[type="submit"]');
   submitButton.disabled = true;
   submitButton.textContent = "Fetching...";
-  elements.dataStatus.textContent = `Fetching ${moduleCodes.length} Dundee modules. This can take a while...`;
+
+  const username = elements.dundeeUsername.value.trim();
+  const password = elements.dundeePassword.value;
+  const url = elements.dundeeUrl.value.trim();
+  const limit = elements.dundeeLimit.value ? Number(elements.dundeeLimit.value) : undefined;
+  const debug = elements.dundeeDebug.checked;
+
+  closeDundeeModal();
+  openProgress("Fetching Dundee Data");
+  logProgress("Logging in...");
 
   try {
     const response = await fetch("/api/scrape-dundee", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: pendingAuth.username,
-        password: pendingAuth.password,
-        url: pendingAuth.url,
-        moduleCodes,
-        limit: elements.prefixLimit.value ? Number(elements.prefixLimit.value) : undefined,
-        debug: elements.prefixDebug.checked
-      })
+      body: JSON.stringify({ username, password, url, limit, debug })
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Timetable fetch failed.");
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error || "Timetable fetch failed.");
+    }
+
+    let scrapedData = null;
+    await readNdjson(response, (streamEvent) => {
+      if (streamEvent.type === "start") {
+        logProgress(`Fetching ${streamEvent.total} modules...`);
+        setProgressPercent(0);
+      } else if (streamEvent.type === "progress") {
+        setProgressPercent((streamEvent.completed / streamEvent.total) * 100);
+      } else if (streamEvent.type === "error") {
+        throw new Error(streamEvent.error);
+      } else if (streamEvent.type === "done") {
+        scrapedData = streamEvent.data;
+      }
+    });
+    if (!scrapedData) throw new Error("Timetable fetch failed.");
+
+    const data = scrapedData;
     const failedText =
       data.failures && data.failures.length
-        ? `; ${data.failures.length} modules failed (${data.failures[0].module}: ${data.failures[0].error})`
+        ? ` (${data.failures.length} modules failed, e.g. ${data.failures[0].module}: ${data.failures[0].error})`
         : "";
-    const debugText = data.debugFiles && data.debugFiles.length ? `; saved raw HTML to debug-output/` : "";
-    setData(
-      data,
-      `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules${failedText}${debugText}`,
-      { restoreSelection: false }
+    logProgress(
+      `Fetched ${data.classes.length} classes from ${data.scrapedModules} modules${failedText}`,
+      data.failures && data.failures.length ? "error" : "success"
     );
-    elements.prefixModal.hidden = true;
-    pendingAuth = null;
-    discoveredModules = [];
+    setData(data, `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules`, {
+      restoreSelection: false
+    });
   } catch (error) {
-    showModalError(elements.prefixModalError, error.message);
-    elements.dataStatus.textContent = error.message;
-  } finally {
+    logProgress(`Module fetch failed: ${error.message}`, "error");
+    finishProgress({ autoClose: false });
     submitButton.disabled = false;
-    submitButton.textContent = "Fetch Selected Modules";
+    submitButton.textContent = "Fetch Data";
+    return;
   }
+
+  setProgressBusy();
+
+  logProgress("Fetching programme list...");
+  try {
+    const response = await fetch("/api/dundee-programmes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, url })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not fetch the programme list.");
+    programmeAuth = { username, password, url };
+    populateProgrammeOptions(data.programmes || []);
+    logProgress(`Loaded ${data.programmes.length} programmes.`, "success");
+  } catch (error) {
+    logProgress(`Programme list unavailable: ${error.message}`, "error");
+  }
+
+  finishProgress();
+  submitButton.disabled = false;
+  submitButton.textContent = "Fetch Data";
 }
 
-elements.loadDundeeButton.addEventListener("click", openDundeeModal);
+elements.fetchDataButton.addEventListener("click", openDundeeModal);
+elements.programmeSelectButton.addEventListener("click", selectProgramme);
+elements.togglePassword.addEventListener("click", () => {
+  const showing = elements.dundeePassword.type === "text";
+  elements.dundeePassword.type = showing ? "password" : "text";
+  elements.togglePassword.textContent = showing ? "Show" : "Hide";
+});
+elements.closeProgressModal.addEventListener("click", closeProgress);
 elements.uploadButton.addEventListener("click", () => elements.uploadInput.click());
 elements.uploadInput.addEventListener("change", handleUpload);
-elements.dundeeLoginForm.addEventListener("submit", discoverModules);
+elements.dundeeLoginForm.addEventListener("submit", submitDundeeLogin);
 elements.closeDundeeModal.addEventListener("click", closeDundeeModal);
 elements.cancelDundeeLogin.addEventListener("click", closeDundeeModal);
 elements.dundeeModal.addEventListener("click", (event) => {
   if (event.target === elements.dundeeModal) closeDundeeModal();
 });
 
-elements.prefixForm.addEventListener("submit", fetchSelectedModules);
-elements.closePrefixModal.addEventListener("click", closePrefixModal);
-elements.cancelPrefixModal.addEventListener("click", closePrefixModal);
-elements.prefixModal.addEventListener("click", (event) => {
-  if (event.target === elements.prefixModal) closePrefixModal();
-});
-elements.prefixList.addEventListener("change", (event) => {
-  const prefix = event.target.dataset.prefix;
-  if (!prefix) return;
-  if (event.target.checked) {
-    selectedPrefixes.add(prefix);
-  } else {
-    selectedPrefixes.delete(prefix);
-  }
-  updatePrefixSummary();
-});
-elements.prefixAllButton.addEventListener("click", () => {
-  selectedPrefixes = new Set(prefixCounts.keys());
-  renderPrefixList();
-});
-elements.prefixNoneButton.addEventListener("click", () => {
-  selectedPrefixes = new Set();
-  renderPrefixList();
-});
-
 elements.moduleSearch.addEventListener("input", (event) => {
   state.search = event.target.value;
   renderModules();
+});
+
+elements.semesterGroups.addEventListener("click", (event) => {
+  const pill = event.target.closest(".week-pill");
+  if (!pill) return;
+  state.weekFilters[pill.dataset.semester] = pill.dataset.week ? Number(pill.dataset.week) : null;
+  render();
 });
 
 elements.moduleList.addEventListener("change", (event) => {
@@ -579,4 +800,6 @@ elements.clearButton.addEventListener("click", () => {
   render();
 });
 
-loadSample();
+elements.clearTimetableButton.addEventListener("click", clearTimetable);
+
+loadInitialData();
