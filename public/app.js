@@ -4,6 +4,8 @@ const START_HOUR = 9;
 const END_HOUR = 18;
 const STORAGE_KEY = "dundee-timetable-selected-modules";
 const DATA_STORAGE_KEY = "dundee-timetable-data";
+const PROGRAMMES_STORAGE_KEY = "dundee-timetable-programmes";
+const CATALOG_STORAGE_KEY = "dundee-timetable-catalog";
 
 const state = {
   modules: [],
@@ -13,7 +15,11 @@ const state = {
   clashGroups: [],
   search: "",
   // Per-semester selected week (SEM1/SEM2/SUM -> week number); missing/null means "all weeks".
-  weekFilters: {}
+  weekFilters: {},
+  // Module ids that belong to the currently-selected programme; null when the visible list
+  // isn't scoped to a programme (Fetch Data, upload, sample). Anything in state.modules that
+  // isn't in this set (when it's set) is a manually-added extra, flagged "Additional" in the list.
+  programmeModuleIds: null
 };
 
 // Held only in memory after "Fetch Data" authenticates, so picking several programmes
@@ -21,10 +27,16 @@ const state = {
 let programmeAuth = null;
 let programmesByLabel = new Map();
 
+// Every module/class seen this session (Fetch Data, a programme select, or an upload) —
+// the searchable pool for "add another module", independent of what's currently visible in
+// state.modules. Persisted so it keeps working after a refresh.
+let catalogModules = new Map();
+let catalogClasses = new Map();
+
 const elements = {
   fetchDataButton: document.querySelector("#fetchDataButton"),
   programmeSearch: document.querySelector("#programmeSearch"),
-  programmeOptions: document.querySelector("#programmeOptions"),
+  programmeSuggestions: document.querySelector("#programmeSuggestions"),
   programmeSelectButton: document.querySelector("#programmeSelectButton"),
   uploadButton: document.querySelector("#uploadButton"),
   uploadInput: document.querySelector("#uploadInput"),
@@ -36,6 +48,7 @@ const elements = {
   semesterGroups: document.querySelector("#semesterGroups"),
   moduleList: document.querySelector("#moduleList"),
   moduleSearch: document.querySelector("#moduleSearch"),
+  moduleSuggestions: document.querySelector("#moduleSuggestions"),
   selectAllButton: document.querySelector("#selectAllButton"),
   clearButton: document.querySelector("#clearButton"),
   clearTimetableButton: document.querySelector("#clearTimetableButton"),
@@ -55,7 +68,6 @@ const elements = {
   progressBar: document.querySelector("#progressBar"),
   progressBarFill: document.querySelector("#progressBarFill"),
   progressLog: document.querySelector("#progressLog"),
-  closeProgressModal: document.querySelector("#closeProgressModal"),
   eventTooltip: document.querySelector("#eventTooltip")
 };
 
@@ -171,7 +183,15 @@ function restoreSelection() {
 
 function persistData(status) {
   try {
-    localStorage.setItem(DATA_STORAGE_KEY, JSON.stringify({ modules: state.modules, classes: state.classes, status }));
+    localStorage.setItem(
+      DATA_STORAGE_KEY,
+      JSON.stringify({
+        modules: state.modules,
+        classes: state.classes,
+        status,
+        programmeModuleIds: state.programmeModuleIds ? [...state.programmeModuleIds] : null
+      })
+    );
   } catch {
     // Ignore storage errors (e.g. quota exceeded) — persistence is best-effort.
   }
@@ -189,6 +209,57 @@ function restoreData() {
   }
 }
 
+function persistCatalog() {
+  try {
+    localStorage.setItem(
+      CATALOG_STORAGE_KEY,
+      JSON.stringify({ modules: [...catalogModules.values()], classes: [...catalogClasses.values()] })
+    );
+  } catch {
+    // Ignore storage errors (e.g. quota exceeded) — persistence is best-effort.
+  }
+}
+
+function restoreCatalog() {
+  const raw = localStorage.getItem(CATALOG_STORAGE_KEY);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed.modules)) parsed.modules.forEach((module) => catalogModules.set(module.id, module));
+    if (Array.isArray(parsed.classes)) parsed.classes.forEach((event) => catalogClasses.set(event.id, event));
+  } catch {
+    // Ignore malformed storage — the catalog just starts empty.
+  }
+}
+
+function mergeIntoCatalog(modules, classes) {
+  (modules || []).forEach((module) => catalogModules.set(module.id, module));
+  (classes || []).forEach((event) => catalogClasses.set(event.id, event));
+  persistCatalog();
+}
+
+// Only the programme list (codes/names) is persisted — never programmeAuth. Credentials stay
+// in memory only, so a hard refresh clears them and "Select" needs a fresh "Fetch Data" login,
+// same as it always has; this just saves re-typing your way back to a populated dropdown.
+function persistProgrammes(programmes) {
+  try {
+    localStorage.setItem(PROGRAMMES_STORAGE_KEY, JSON.stringify(programmes));
+  } catch {
+    // Ignore storage errors (e.g. quota exceeded) — persistence is best-effort.
+  }
+}
+
+function restoreProgrammes() {
+  const raw = localStorage.getItem(PROGRAMMES_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function setData(data, status, options = {}) {
   // A fresh upload or fetch always fully replaces whatever was loaded before —
   // no merging with prior data, and (unless explicitly restoring, i.e. only on
@@ -199,6 +270,7 @@ function setData(data, status, options = {}) {
   state.selected = new Set();
   state.search = "";
   state.weekFilters = {};
+  state.programmeModuleIds = options.programmeModuleIds ? new Set(options.programmeModuleIds) : null;
   elements.moduleSearch.value = "";
 
   const restored = options.restoreSelection !== false && restoreSelection();
@@ -451,6 +523,7 @@ function renderModules() {
       const count = classCountFor(module.id);
       const moduleClasses = state.classes.filter((event) => event.moduleId === module.id);
       const clashes = moduleClasses.filter((event) => state.clashes.has(event.id)).length;
+      const isAdditional = state.programmeModuleIds && !state.programmeModuleIds.has(module.id);
       label.innerHTML = `
         <input type="checkbox" ${state.selected.has(module.id) ? "checked" : ""} data-module-id="${escapeHtml(module.id)}" />
         <span>
@@ -458,6 +531,7 @@ function renderModules() {
           <span class="module-name">${escapeHtml(module.name || "Unnamed module")}</span>
           <span class="module-meta">
             <span class="pill">${count} ${count === 1 ? "class" : "classes"}</span>
+            ${isAdditional ? `<span class="pill additional">Additional</span>` : ""}
             ${clashes ? `<span class="pill warning">${clashes} clash${clashes === 1 ? "" : "es"}</span>` : ""}
           </span>
         </span>
@@ -478,18 +552,27 @@ async function loadSample() {
 }
 
 function loadInitialData() {
+  restoreCatalog();
+
+  const persistedProgrammes = restoreProgrammes();
+  if (persistedProgrammes && persistedProgrammes.length) {
+    populateProgrammeOptions(persistedProgrammes, { persist: false });
+  }
+
   const persisted = restoreData();
   if (persisted) {
-    setData(persisted, persisted.status || "Restored previous session", { persist: false });
+    setData(persisted, persisted.status || "Restored previous session", {
+      persist: false,
+      programmeModuleIds: persisted.programmeModuleIds || undefined
+    });
     return;
   }
   loadSample();
 }
 
 function clearTimetable() {
-  state.selected.clear();
-  persistSelection();
-  render();
+  setData({ modules: [], classes: [] }, "No timetable loaded", { restoreSelection: false });
+  elements.programmeSearch.value = "";
 }
 
 let progressHasError = false;
@@ -557,6 +640,7 @@ async function handleUpload(event) {
     if (!response.ok) throw new Error(data.error || "Import failed.");
     if (!data.classes.length) throw new Error("No classes were found in that file.");
     logProgress(`Imported ${data.classes.length} classes from ${file.name}.`, "success");
+    mergeIntoCatalog(data.modules, data.classes);
     setData(data, `Imported ${data.classes.length} classes from ${file.name}`, { restoreSelection: false });
     finishProgress();
   } catch (error) {
@@ -577,19 +661,83 @@ function closeDundeeModal() {
   elements.togglePassword.textContent = "Show";
 }
 
-function populateProgrammeOptions(programmes) {
+function populateProgrammeOptions(programmes, options = {}) {
   programmesByLabel = new Map();
-  elements.programmeOptions.innerHTML = "";
   programmes.forEach((programme) => {
     const label = `${programme.code} — ${programme.name || programme.code}`;
     programmesByLabel.set(label, programme);
-    const option = document.createElement("option");
-    option.value = label;
-    elements.programmeOptions.appendChild(option);
   });
   elements.programmeSearch.disabled = false;
   elements.programmeSearch.value = "";
   elements.programmeSelectButton.disabled = programmes.length === 0;
+  if (options.persist !== false) persistProgrammes(programmes);
+}
+
+// Shared by the programme and module search boxes: a text input paired with a filterable
+// dropdown of every available item. `onPick` decides what picking an item actually does —
+// for programmes that's filling the box for a later "Select" click; for modules it's an
+// immediate add.
+function createSuggestionBox({ input, list, getItems, getLabel, onPick }) {
+  function hide() {
+    list.hidden = true;
+    list.innerHTML = "";
+  }
+
+  function render() {
+    const query = input.value.trim().toLowerCase();
+    const items = getItems()
+      .filter((item) => !query || getLabel(item).toLowerCase().includes(query))
+      .slice(0, 50);
+
+    if (!items.length) {
+      hide();
+      return;
+    }
+
+    list.innerHTML = "";
+    items.forEach((item) => {
+      const label = getLabel(item);
+      const entry = document.createElement("li");
+      entry.className = "suggestion-item";
+      entry.textContent = label;
+      entry.addEventListener("mousedown", (event) => {
+        // mousedown (not click) fires before the input's blur, so the suggestion is still there to read.
+        event.preventDefault();
+        onPick(item, label);
+        hide();
+      });
+      list.appendChild(entry);
+    });
+    list.hidden = false;
+  }
+
+  input.addEventListener("input", render);
+  input.addEventListener("focus", render);
+  input.addEventListener("blur", hide);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hide();
+  });
+}
+
+// Picking a module from the catalog search adds it (and its classes, if not already present)
+// straight into the visible list and ticks it on — unlike programme search, there's no
+// separate "Select" step since the data's already known.
+function addModuleFromCatalog(module) {
+  if (!state.modules.some((existing) => existing.id === module.id)) {
+    state.modules = [...state.modules, module].sort((a, b) => a.code.localeCompare(b.code));
+  }
+  const existingClassIds = new Set(state.classes.map((event) => event.id));
+  const newClasses = [...catalogClasses.values()].filter(
+    (event) => event.moduleId === module.id && !existingClassIds.has(event.id)
+  );
+  if (newClasses.length) state.classes = [...state.classes, ...newClasses];
+
+  state.selected.add(module.id);
+  elements.moduleSearch.value = "";
+  state.search = "";
+  persistSelection();
+  persistData(`Added ${module.code}`);
+  render();
 }
 
 async function selectProgramme() {
@@ -626,9 +774,11 @@ async function selectProgramme() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not fetch that programme's timetable.");
     logProgress(`Loaded ${data.classes.length} classes for ${programme.code}.`, "success");
+    mergeIntoCatalog(data.modules, data.classes);
     setData(data, `Loaded ${data.classes.length} classes for ${programme.code}`, {
       restoreSelection: false,
-      selectAll: true
+      selectAll: true,
+      programmeModuleIds: data.modules.map((module) => module.id)
     });
     finishProgress();
   } catch (error) {
@@ -713,6 +863,7 @@ async function submitDundeeLogin(event) {
       `Fetched ${data.classes.length} classes from ${data.scrapedModules} modules${failedText}`,
       data.failures && data.failures.length ? "error" : "success"
     );
+    mergeIntoCatalog(data.modules, data.classes);
     setData(data, `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules`, {
       restoreSelection: false
     });
@@ -749,12 +900,30 @@ async function submitDundeeLogin(event) {
 
 elements.fetchDataButton.addEventListener("click", openDundeeModal);
 elements.programmeSelectButton.addEventListener("click", selectProgramme);
+createSuggestionBox({
+  input: elements.programmeSearch,
+  list: elements.programmeSuggestions,
+  getItems: () => [...programmesByLabel.keys()],
+  getLabel: (label) => label,
+  onPick: (label) => {
+    elements.programmeSearch.value = label;
+  }
+});
+createSuggestionBox({
+  input: elements.moduleSearch,
+  list: elements.moduleSuggestions,
+  getItems: () => [...catalogModules.values()],
+  getLabel: (module) => `${module.code} — ${module.name || module.code}`,
+  onPick: (module) => addModuleFromCatalog(module)
+});
 elements.togglePassword.addEventListener("click", () => {
   const showing = elements.dundeePassword.type === "text";
   elements.dundeePassword.type = showing ? "password" : "text";
   elements.togglePassword.textContent = showing ? "Show" : "Hide";
 });
-elements.closeProgressModal.addEventListener("click", closeProgress);
+elements.progressModal.addEventListener("click", (event) => {
+  if (event.target === elements.progressModal) closeProgress();
+});
 elements.uploadButton.addEventListener("click", () => elements.uploadInput.click());
 elements.uploadInput.addEventListener("change", handleUpload);
 elements.dundeeLoginForm.addEventListener("submit", submitDundeeLogin);

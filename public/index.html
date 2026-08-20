@@ -34,12 +34,11 @@
               <input
                 id="programmeSearch"
                 type="text"
-                list="programmeOptions"
                 placeholder="Select Programme"
                 autocomplete="off"
                 disabled
               />
-              <datalist id="programmeOptions"></datalist>
+              <ul class="programme-suggestions" id="programmeSuggestions" hidden></ul>
             </label>
             <button class="primary-button" id="programmeSelectButton" type="button" disabled>Select</button>
           </div>
@@ -73,8 +72,9 @@
           </div>
 
           <label class="search-box">
-            <span>Search</span>
-            <input id="moduleSearch" type="search" placeholder="Code or name" />
+            <span>Modules</span>
+            <input id="moduleSearch" type="search" placeholder="Code or name" autocomplete="off" />
+            <ul class="suggestion-list" id="moduleSuggestions" hidden></ul>
           </label>
 
           <div class="module-list" id="moduleList"></div>
@@ -133,7 +133,6 @@
         <section class="login-modal progress-modal" role="dialog" aria-modal="true" aria-labelledby="progressTitle">
           <div class="modal-header">
             <h2 id="progressTitle">Fetching Data</h2>
-            <button class="icon-button" id="closeProgressModal" type="button" title="Close">Close</button>
           </div>
           <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressBarFill"></div></div>
           <ul class="progress-log" id="progressLog"></ul>
