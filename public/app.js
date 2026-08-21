@@ -1,3 +1,10 @@
+// GitHub Pages serves this app as static files with no server.js behind it, so anything that
+// calls /api/... (Fetch Data, Upload, the programme picker) can't work there — hidden via a
+// body class rather than removed from the DOM, so the exact same files still run the full
+// local app against server.js.
+const IS_STATIC_DEPLOY = location.hostname.endsWith("github.io");
+if (IS_STATIC_DEPLOY) document.body.classList.add("is-static-deploy");
+
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 const SEMESTERS = ["SEM1", "SEM2", "SUM"];
 const START_HOUR = 9;

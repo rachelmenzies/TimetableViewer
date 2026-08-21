@@ -1,0 +1,49 @@
+name: Fetch Dundee timetable and deploy
+
+on:
+  schedule:
+    # 06:00 UTC daily. Adjust if you want it to land at a different local time.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment can run at a time; queue rather than let two overlap.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch latest timetable data
+        env:
+          DUNDEE_USERNAME: ${{ secrets.DUNDEE_USERNAME }}
+          DUNDEE_PASSWORD: ${{ secrets.DUNDEE_PASSWORD }}
+        run: node scripts/fetch-timetable.js
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

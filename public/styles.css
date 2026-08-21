@@ -635,6 +635,13 @@ textarea:focus {
   display: none;
 }
 
+/* No server.js on GitHub Pages, so anything hitting /api/... has nothing to talk to. */
+.is-static-deploy #fetchDataButton,
+.is-static-deploy #uploadButton,
+.is-static-deploy .programme-bar {
+  display: none;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
