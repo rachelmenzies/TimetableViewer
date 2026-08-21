@@ -11,11 +11,16 @@ const path = require("path");
 const {
   scrapeDundeeTimetable,
   discoverDundeeProgrammes,
-  scrapeDundeeProgramme,
+  scrapeDundeeProgrammes,
   DEFAULT_DUNDEE_URL
 } = require("../lib/dundee");
 
 const OUTPUT_PATH = path.join(__dirname, "..", "public", "sample-data.json");
+
+// Each concurrent lane is its own independent login against Dundee, so this trades server load
+// for speed — set DUNDEE_CONCURRENCY to tune it without a code change. Kept conservative by
+// default; raise cautiously and watch for failures climbing before pushing it further.
+const CONCURRENCY = Number(process.env.DUNDEE_CONCURRENCY) || 4;
 
 async function main() {
   const username = process.env.DUNDEE_USERNAME;
@@ -26,11 +31,12 @@ async function main() {
     throw new Error("DUNDEE_USERNAME and DUNDEE_PASSWORD environment variables are required.");
   }
 
-  console.log(`Fetching all Dundee modules from ${url} ...`);
+  console.log(`Fetching all Dundee modules from ${url} (concurrency ${CONCURRENCY}) ...`);
   const data = await scrapeDundeeTimetable({
     username,
     password,
     url,
+    concurrency: CONCURRENCY,
     onProgress: (event) => {
       if (event.type === "start") console.log(`Found ${event.total} modules.`);
       if (event.type === "progress" && event.completed % 25 === 0) {
@@ -55,23 +61,26 @@ async function main() {
     console.warn(`Programme discovery failed (continuing without it): ${error.message}`);
   }
 
-  // For each programme, record which module ids belong to it — this is what lets the static
-  // site's "Select" button work with no backend: it just filters the already-loaded module/class
-  // arrays down to these ids instead of asking a server for a fresh scrape. One live request per
-  // programme (same cost per item as the module loop above), so a programme's entry is simply
-  // left without moduleIds if its own scrape fails; the app falls back to a clear "not available"
-  // message for that one programme rather than losing the rest.
-  let programmesDone = 0;
-  for (const programme of programmes) {
-    try {
-      const result = await scrapeDundeeProgramme({ username, password, url, programmeCode: programme.code });
-      programme.moduleIds = result.modules.map((module) => module.id);
-    } catch (error) {
-      console.warn(`  ${programme.code} failed (no moduleIds): ${error.message}`);
-    }
-    programmesDone += 1;
-    if (programmesDone % 10 === 0 || programmesDone === programmes.length) {
-      console.log(`  programmes ${programmesDone}/${programmes.length}`);
+  // Records which module ids belong to each programme — this is what lets the static site's
+  // "Select" work with no backend, by filtering the already-loaded module/class arrays down to
+  // these ids instead of asking a server for a fresh scrape. A programme is simply left without
+  // moduleIds if its own fetch fails; the app falls back to a clear "not available" message for
+  // that one programme rather than losing the rest.
+  if (programmes.length) {
+    const { failures: programmeFailures } = await scrapeDundeeProgrammes({
+      username,
+      password,
+      url,
+      programmes,
+      concurrency: CONCURRENCY,
+      onProgress: (event) => {
+        if (event.type === "progress" && event.completed % 25 === 0) {
+          console.log(`  programmes ${event.completed}/${event.total} (${event.programme})`);
+        }
+      }
+    });
+    if (programmeFailures.length) {
+      console.warn(`${programmeFailures.length} programmes failed and have no moduleIds.`);
     }
   }
 
