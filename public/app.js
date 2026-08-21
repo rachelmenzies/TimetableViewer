@@ -26,7 +26,8 @@ const state = {
   // Module ids that belong to the currently-selected programme; null when the visible list
   // isn't scoped to a programme (Fetch Data, upload, sample). Anything in state.modules that
   // isn't in this set (when it's set) is a manually-added extra, flagged "Additional" in the list.
-  programmeModuleIds: null
+  programmeModuleIds: null,
+  scrapedAt: null
 };
 
 // Held only in memory after "Fetch Data" authenticates, so picking several programmes
@@ -75,7 +76,8 @@ const elements = {
   progressBar: document.querySelector("#progressBar"),
   progressBarFill: document.querySelector("#progressBarFill"),
   progressLog: document.querySelector("#progressLog"),
-  eventTooltip: document.querySelector("#eventTooltip")
+  eventTooltip: document.querySelector("#eventTooltip"),
+  lastUpdated: document.querySelector("#lastUpdated")
 };
 
 function minutes(time) {
@@ -103,10 +105,6 @@ function semesterOf(event) {
 
 function moduleFor(id) {
   return state.modules.find((module) => module.id === id) || { code: "", name: "" };
-}
-
-function classCountFor(moduleId) {
-  return state.classes.filter((event) => event.moduleId === moduleId).length;
 }
 
 function parseWeeks(weeksText) {
@@ -196,7 +194,8 @@ function persistData(status) {
         modules: state.modules,
         classes: state.classes,
         status,
-        programmeModuleIds: state.programmeModuleIds ? [...state.programmeModuleIds] : null
+        programmeModuleIds: state.programmeModuleIds ? [...state.programmeModuleIds] : null,
+        scrapedAt: state.scrapedAt
       })
     );
   } catch {
@@ -274,10 +273,14 @@ function setData(data, status, options = {}) {
   // The timetable otherwise always starts blank: modules are added by clicking them.
   state.modules = Array.isArray(data.modules) ? data.modules : [];
   state.classes = Array.isArray(data.classes) ? data.classes : [];
+  // Every module/class this app has ever loaded, regardless of source — this is the pool the
+  // module-add search and "Select programme" (when using baked-in moduleIds) both draw from.
+  mergeIntoCatalog(state.modules, state.classes);
   state.selected = new Set();
   state.search = "";
   state.weekFilters = {};
   state.programmeModuleIds = options.programmeModuleIds ? new Set(options.programmeModuleIds) : null;
+  state.scrapedAt = data.scrapedAt || null;
   elements.moduleSearch.value = "";
 
   const restored = options.restoreSelection !== false && restoreSelection();
@@ -287,7 +290,30 @@ function setData(data, status, options = {}) {
 
   persistSelection();
   if (options.persist !== false) persistData(status);
+  updateLastUpdated();
+  // A baked-in programme list (from the nightly static-data fetch) makes both search and
+  // "Select" usable with no backend — see selectProgramme's moduleIds branch.
+  if (Array.isArray(data.programmes) && data.programmes.length) {
+    populateProgrammeOptions(data.programmes, { persist: false });
+  }
   render();
+}
+
+function updateLastUpdated() {
+  if (!state.scrapedAt) {
+    elements.lastUpdated.hidden = true;
+    return;
+  }
+  const date = new Date(state.scrapedAt);
+  if (Number.isNaN(date.getTime())) {
+    elements.lastUpdated.hidden = true;
+    return;
+  }
+  elements.lastUpdated.textContent = `Data last updated ${date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  })}`;
+  elements.lastUpdated.hidden = false;
 }
 
 function layoutEvents(events) {
@@ -519,6 +545,15 @@ function renderModules() {
   const query = state.search.trim().toLowerCase();
   elements.moduleList.innerHTML = "";
 
+  // Grouped once per render (O(classes)) rather than re-scanning the full classes array per
+  // module (O(modules * classes)) — the latter was fine against the ~45-class demo dataset but
+  // ground to a halt against a real Dundee-scale fetch (thousands of modules/classes).
+  const classesByModule = new Map();
+  state.classes.forEach((event) => {
+    if (!classesByModule.has(event.moduleId)) classesByModule.set(event.moduleId, []);
+    classesByModule.get(event.moduleId).push(event);
+  });
+
   state.modules
     .filter((module) => {
       if (!query) return true;
@@ -527,8 +562,8 @@ function renderModules() {
     .forEach((module) => {
       const label = document.createElement("label");
       label.className = "module-item";
-      const count = classCountFor(module.id);
-      const moduleClasses = state.classes.filter((event) => event.moduleId === module.id);
+      const moduleClasses = classesByModule.get(module.id) || [];
+      const count = moduleClasses.length;
       const clashes = moduleClasses.filter((event) => state.clashes.has(event.id)).length;
       const isAdditional = state.programmeModuleIds && !state.programmeModuleIds.has(module.id);
       label.innerHTML = `
@@ -647,7 +682,6 @@ async function handleUpload(event) {
     if (!response.ok) throw new Error(data.error || "Import failed.");
     if (!data.classes.length) throw new Error("No classes were found in that file.");
     logProgress(`Imported ${data.classes.length} classes from ${file.name}.`, "success");
-    mergeIntoCatalog(data.modules, data.classes);
     setData(data, `Imported ${data.classes.length} classes from ${file.name}`, { restoreSelection: false });
     finishProgress();
   } catch (error) {
@@ -755,9 +789,30 @@ async function selectProgramme() {
     finishProgress({ autoClose: false });
     return;
   }
+
+  // Baked-in association from the nightly static-data fetch (see scripts/fetch-timetable.js) —
+  // no network call needed, just filter what's already loaded. This is the only path available
+  // on GitHub Pages, and also the faster path locally whenever it's present.
+  if (Array.isArray(programme.moduleIds)) {
+    const idSet = new Set(programme.moduleIds);
+    const modules = [...catalogModules.values()].filter((module) => idSet.has(module.id));
+    const classes = [...catalogClasses.values()].filter((event) => idSet.has(event.moduleId));
+    setData({ modules, classes }, `Loaded ${classes.length} classes for ${programme.code}`, {
+      restoreSelection: false,
+      selectAll: true,
+      programmeModuleIds: programme.moduleIds
+    });
+    return;
+  }
+
   if (!programmeAuth) {
     openProgress("Select Programme");
-    logProgress("Session expired — click Fetch Data again.", "error");
+    logProgress(
+      IS_STATIC_DEPLOY
+        ? "This programme's modules weren't included in today's data — try again after tomorrow's update."
+        : "Session expired — click Fetch Data again.",
+      "error"
+    );
     finishProgress({ autoClose: false });
     return;
   }
@@ -781,7 +836,6 @@ async function selectProgramme() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not fetch that programme's timetable.");
     logProgress(`Loaded ${data.classes.length} classes for ${programme.code}.`, "success");
-    mergeIntoCatalog(data.modules, data.classes);
     setData(data, `Loaded ${data.classes.length} classes for ${programme.code}`, {
       restoreSelection: false,
       selectAll: true,
@@ -870,7 +924,6 @@ async function submitDundeeLogin(event) {
       `Fetched ${data.classes.length} classes from ${data.scrapedModules} modules${failedText}`,
       data.failures && data.failures.length ? "error" : "success"
     );
-    mergeIntoCatalog(data.modules, data.classes);
     setData(data, `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules`, {
       restoreSelection: false
     });

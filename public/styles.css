@@ -68,9 +68,16 @@ button {
 
 .brand {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: clamp(1.45rem, 2vw, 2rem);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.last-updated {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 h1,
@@ -635,10 +642,11 @@ textarea:focus {
   display: none;
 }
 
-/* No server.js on GitHub Pages, so anything hitting /api/... has nothing to talk to. */
+/* No server.js on GitHub Pages, so anything hitting /api/... has nothing to talk to. Programme
+   search and "Select" both still work there — they run off the baked-in static data instead
+   (see selectProgramme's moduleIds branch in app.js) — so only Fetch Data/Upload are hidden. */
 .is-static-deploy #fetchDataButton,
-.is-static-deploy #uploadButton,
-.is-static-deploy .programme-bar {
+.is-static-deploy #uploadButton {
   display: none;
 }
 
