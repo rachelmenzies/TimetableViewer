@@ -211,10 +211,6 @@ textarea:focus {
   display: block;
 }
 
-.programme-bar .primary-button {
-  flex-shrink: 0;
-}
-
 .suggestion-list {
   position: absolute;
   top: calc(100% + 4px);

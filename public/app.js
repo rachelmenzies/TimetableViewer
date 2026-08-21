@@ -45,7 +45,6 @@ const elements = {
   fetchDataButton: document.querySelector("#fetchDataButton"),
   programmeSearch: document.querySelector("#programmeSearch"),
   programmeSuggestions: document.querySelector("#programmeSuggestions"),
-  programmeSelectButton: document.querySelector("#programmeSelectButton"),
   uploadButton: document.querySelector("#uploadButton"),
   uploadInput: document.querySelector("#uploadInput"),
   selectedCount: document.querySelector("#selectedCount"),
@@ -718,7 +717,6 @@ function populateProgrammeOptions(programmes, options = {}) {
   });
   elements.programmeSearch.disabled = false;
   elements.programmeSearch.value = "";
-  elements.programmeSelectButton.disabled = programmes.length === 0;
   if (options.persist !== false) persistProgrammes(programmes);
 }
 
@@ -793,15 +791,7 @@ function addModuleFromCatalog(module) {
   render();
 }
 
-async function selectProgramme() {
-  const programme = programmesByLabel.get(elements.programmeSearch.value.trim());
-  if (!programme) {
-    openProgress("Select Programme");
-    logProgress("Pick a programme from the list first.", "error");
-    finishProgress({ autoClose: false });
-    return;
-  }
-
+async function selectProgramme(programme) {
   // Baked-in association from the nightly static-data fetch (see scripts/fetch-timetable.js) —
   // no network call needed, just filter what's already loaded. This is the only path available
   // on GitHub Pages, and also the faster path locally whenever it's present.
@@ -829,7 +819,6 @@ async function selectProgramme() {
     return;
   }
 
-  elements.programmeSelectButton.disabled = true;
   openProgress(`Fetching ${programme.code}`);
   logProgress(`Fetching activities for ${programme.code}...`);
 
@@ -857,8 +846,6 @@ async function selectProgramme() {
   } catch (error) {
     logProgress(error.message, "error");
     finishProgress({ autoClose: false });
-  } finally {
-    elements.programmeSelectButton.disabled = false;
   }
 }
 
@@ -971,7 +958,6 @@ async function submitDundeeLogin(event) {
 }
 
 elements.fetchDataButton.addEventListener("click", openDundeeModal);
-elements.programmeSelectButton.addEventListener("click", selectProgramme);
 createSuggestionBox({
   input: elements.programmeSearch,
   list: elements.programmeSuggestions,
@@ -979,6 +965,8 @@ createSuggestionBox({
   getLabel: (label) => label,
   onPick: (label) => {
     elements.programmeSearch.value = label;
+    const programme = programmesByLabel.get(label);
+    if (programme) selectProgramme(programme);
   }
 });
 createSuggestionBox({
