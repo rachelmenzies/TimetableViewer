@@ -2,9 +2,13 @@ name: Fetch Dundee timetable and deploy
 
 on:
   schedule:
-    # 04:00 UTC daily. GitHub Actions cron is always UTC with no DST adjustment, so this is
-    # 4am UK time in winter (GMT) but 5am during British Summer Time.
-    - cron: "0 4 * * *"
+    # 01:00 UTC start, timed to FINISH around 4am — the full scrape (all modules + every
+    # programme's module associations) took 2h51m in the most recent run, so this isn't exact;
+    # it'll drift with Dundee's response times night to night. Re-check actual run duration
+    # (Actions tab) occasionally and nudge this earlier/later if it drifts far from 4am.
+    # Also note: GitHub Actions cron is always UTC with no DST adjustment, so "1am" here is
+    # really 1am UK time in winter (GMT) but 2am during British Summer Time.
+    - cron: "0 1 * * *"
   workflow_dispatch: {}
 
 permissions:
