@@ -186,6 +186,10 @@ function restoreSelection() {
 }
 
 function persistData(status) {
+  // Never read back on the static deploy (loadInitialData always fetches sample-data.json
+  // fresh there — see restoreData's call site), so writing the whole dataset to storage would
+  // be wasted work and localStorage pressure for no benefit.
+  if (IS_STATIC_DEPLOY) return;
   try {
     localStorage.setItem(
       DATA_STORAGE_KEY,
@@ -215,6 +219,9 @@ function restoreData() {
 }
 
 function persistCatalog() {
+  // Never read back on the static deploy (see loadInitialData), so writing it there would be
+  // wasted work and unnecessary localStorage pressure.
+  if (IS_STATIC_DEPLOY) return;
   try {
     localStorage.setItem(
       CATALOG_STORAGE_KEY,
@@ -593,7 +600,14 @@ async function loadSample() {
 }
 
 function loadInitialData() {
-  restoreCatalog();
+  // Same reasoning as skipping restoreData() below: class ids aren't stable across different
+  // scrapes (they're positional — moduleId-index — not content-based), so restoring a cached
+  // catalog from an earlier visit and then merging today's fresh sample-data.json on top of it
+  // can leave the SAME physical class sitting under two different ids at once — stale and
+  // fresh copies both surviving side by side instead of the fresh one replacing the stale one.
+  // On the static deploy there's only one data source anyway (sample-data.json, reloaded fresh
+  // every visit), so the cached catalog serves no purpose there and is skipped entirely.
+  if (!IS_STATIC_DEPLOY) restoreCatalog();
 
   const persistedProgrammes = restoreProgrammes();
   if (persistedProgrammes && persistedProgrammes.length) {
