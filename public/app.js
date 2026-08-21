@@ -761,7 +761,11 @@ function createSuggestionBox({ input, list, getItems, getLabel, onPick }) {
   }
 
   input.addEventListener("input", render);
+  // "focus" alone misses a click into a box that's already focused — e.g. right after picking
+  // a suggestion, since that pick deliberately prevents the input from blurring. "click" fires
+  // on every click regardless of prior focus state, so it covers that case too.
   input.addEventListener("focus", render);
+  input.addEventListener("click", render);
   input.addEventListener("blur", hide);
   input.addEventListener("keydown", (event) => {
     if (event.key === "Escape") hide();
