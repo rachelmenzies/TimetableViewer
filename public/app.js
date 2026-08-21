@@ -601,13 +601,21 @@ function loadInitialData() {
     populateProgrammeOptions(persistedProgrammes, { persist: false });
   }
 
-  const persisted = restoreData();
-  if (persisted) {
-    setData(persisted, persisted.status || "Restored previous session", {
-      persist: false,
-      programmeModuleIds: persisted.programmeModuleIds || undefined
-    });
-    return;
+  // On GitHub Pages, sample-data.json IS the live data source — refreshed nightly, so every
+  // visit should load it fresh rather than freezing on whatever got cached in localStorage on
+  // an earlier visit (e.g. an empty snapshot left behind by "Clear timetable", which would
+  // otherwise show a permanently-empty app until the browser's storage is manually cleared).
+  // Locally, restoring the cached dataset is still worth it — it avoids re-authenticating
+  // against Dundee on every page refresh.
+  if (!IS_STATIC_DEPLOY) {
+    const persisted = restoreData();
+    if (persisted) {
+      setData(persisted, persisted.status || "Restored previous session", {
+        persist: false,
+        programmeModuleIds: persisted.programmeModuleIds || undefined
+      });
+      return;
+    }
   }
   loadSample();
 }

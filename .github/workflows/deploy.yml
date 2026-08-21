@@ -1,0 +1,50 @@
+name: Deploy site (code only, reuses already-fetched data)
+
+# For pure code/UI fixes that don't need a fresh Dundee scrape — the scheduled workflow in
+# fetch-timetable.yml re-scrapes everything (~3 hours) every time it deploys, since the fetched
+# JSON is intentionally never committed to git. This instead grabs whatever's already live at
+# sample-data.json (last night's real data) and redeploys the current public/ on top of it, so a
+# code fix can go out in about a minute instead of waiting for the next full scrape.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "public/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reuse the currently-live timetable data
+        run: |
+          curl -fsSL https://rachelmenzies.github.io/TimetableViewer/sample-data.json -o public/sample-data.json \
+            || echo "Could not fetch the live data file; deploying with whatever's in the repo instead."
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
