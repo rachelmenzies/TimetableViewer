@@ -9,7 +9,6 @@ const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 const SEMESTERS = ["SEM1", "SEM2", "SUM"];
 const START_HOUR = 9;
 const END_HOUR = 18;
-const STORAGE_KEY = "dundee-timetable-selected-modules";
 const DATA_STORAGE_KEY = "dundee-timetable-data";
 const PROGRAMMES_STORAGE_KEY = "dundee-timetable-programmes";
 const CATALOG_STORAGE_KEY = "dundee-timetable-catalog";
@@ -169,22 +168,6 @@ function selectedEvents() {
   return state.classes.filter((event) => state.selected.has(event.moduleId));
 }
 
-function persistSelection() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([...state.selected]));
-}
-
-function restoreSelection() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return false;
-  try {
-    const ids = JSON.parse(raw);
-    state.selected = new Set(ids.filter((id) => state.modules.some((module) => module.id === id)));
-    return state.selected.size > 0;
-  } catch {
-    return false;
-  }
-}
-
 function persistData(status) {
   // Never read back on the static deploy (loadInitialData always fetches sample-data.json
   // fresh there — see restoreData's call site), so writing the whole dataset to storage would
@@ -274,9 +257,9 @@ function restoreProgrammes() {
 
 function setData(data, status, options = {}) {
   // A fresh upload or fetch always fully replaces whatever was loaded before —
-  // no merging with prior data, and (unless explicitly restoring, i.e. only on
-  // the initial page load) no carrying over a previous session's selection.
-  // The timetable otherwise always starts blank: modules are added by clicking them.
+  // no merging with prior data, and never any carrying over of a previous session's
+  // selection: the timetable always starts blank, including on the initial page load.
+  // Modules are added by clicking them (or all at once via selectAll on a programme pick).
   state.modules = Array.isArray(data.modules) ? data.modules : [];
   state.classes = Array.isArray(data.classes) ? data.classes : [];
   // Every module/class this app has ever loaded, regardless of source — this is the pool the
@@ -289,12 +272,10 @@ function setData(data, status, options = {}) {
   state.scrapedAt = data.scrapedAt || null;
   elements.moduleSearch.value = "";
 
-  const restored = options.restoreSelection !== false && restoreSelection();
-  if (!restored && options.selectAll) {
+  if (options.selectAll) {
     state.modules.forEach((module) => state.selected.add(module.id));
   }
 
-  persistSelection();
   if (options.persist !== false) persistData(status);
   updateLastUpdated();
   // A baked-in programme list (from the nightly static-data fetch) makes both search and
@@ -634,7 +615,7 @@ function loadInitialData() {
 }
 
 function clearTimetable() {
-  setData({ modules: [], classes: [] }, "No timetable loaded", { restoreSelection: false });
+  setData({ modules: [], classes: [] }, "No timetable loaded");
   elements.programmeSearch.value = "";
 }
 
@@ -703,7 +684,7 @@ async function handleUpload(event) {
     if (!response.ok) throw new Error(data.error || "Import failed.");
     if (!data.classes.length) throw new Error("No classes were found in that file.");
     logProgress(`Imported ${data.classes.length} classes from ${file.name}.`, "success");
-    setData(data, `Imported ${data.classes.length} classes from ${file.name}`, { restoreSelection: false });
+    setData(data, `Imported ${data.classes.length} classes from ${file.name}`);
     finishProgress();
   } catch (error) {
     logProgress(error.message, "error");
@@ -800,7 +781,6 @@ function addModuleFromCatalog(module) {
   state.selected.add(module.id);
   elements.moduleSearch.value = "";
   state.search = "";
-  persistSelection();
   persistData(`Added ${module.code}`);
   render();
 }
@@ -814,7 +794,6 @@ async function selectProgramme(programme) {
     const modules = [...catalogModules.values()].filter((module) => idSet.has(module.id));
     const classes = [...catalogClasses.values()].filter((event) => idSet.has(event.moduleId));
     setData({ modules, classes }, `Loaded ${classes.length} classes for ${programme.code}`, {
-      restoreSelection: false,
       selectAll: true,
       programmeModuleIds: programme.moduleIds
     });
@@ -852,7 +831,6 @@ async function selectProgramme(programme) {
     if (!response.ok) throw new Error(data.error || "Could not fetch that programme's timetable.");
     logProgress(`Loaded ${data.classes.length} classes for ${programme.code}.`, "success");
     setData(data, `Loaded ${data.classes.length} classes for ${programme.code}`, {
-      restoreSelection: false,
       selectAll: true,
       programmeModuleIds: data.modules.map((module) => module.id)
     });
@@ -937,9 +915,7 @@ async function submitDundeeLogin(event) {
       `Fetched ${data.classes.length} classes from ${data.scrapedModules} modules${failedText}`,
       data.failures && data.failures.length ? "error" : "success"
     );
-    setData(data, `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules`, {
-      restoreSelection: false
-    });
+    setData(data, `Scraped ${data.classes.length} classes from ${data.scrapedModules} Dundee modules`);
   } catch (error) {
     logProgress(`Module fetch failed: ${error.message}`, "error");
     finishProgress({ autoClose: false });
@@ -1027,19 +1003,16 @@ elements.moduleList.addEventListener("change", (event) => {
   } else {
     state.selected.delete(moduleId);
   }
-  persistSelection();
   render();
 });
 
 elements.selectAllButton.addEventListener("click", () => {
   state.modules.forEach((module) => state.selected.add(module.id));
-  persistSelection();
   render();
 });
 
 elements.clearButton.addEventListener("click", () => {
   state.selected.clear();
-  persistSelection();
   render();
 });
 

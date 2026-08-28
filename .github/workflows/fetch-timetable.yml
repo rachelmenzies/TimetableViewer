@@ -2,13 +2,16 @@ name: Fetch Dundee timetable and deploy
 
 on:
   schedule:
-    # 01:00 UTC start, timed to FINISH around 4am — the full scrape (all modules + every
-    # programme's module associations) took 2h51m in the most recent run, so this isn't exact;
-    # it'll drift with Dundee's response times night to night. Re-check actual run duration
-    # (Actions tab) occasionally and nudge this earlier/later if it drifts far from 4am.
-    # Also note: GitHub Actions cron is always UTC with no DST adjustment, so "1am" here is
-    # really 1am UK time in winter (GMT) but 2am during British Summer Time.
-    - cron: "0 1 * * *"
+    # Since the scrape was parallelised the whole job (all modules + every programme's module
+    # associations) runs in ~20 min, so this only needs to land in the early hours UK time.
+    # GitHub Actions cron is best-effort and heavily congested at the top of the hour: the old
+    # "0 1" slot routinely drifted an hour+, and on 2026-08-27 it was held ~9.75h and didn't run
+    # until lunchtime. An odd minute off the hour keeps that delay smaller. 01:23 UTC + the usual
+    # ~1h queue still finishes around 03:00, comfortably before morning.
+    # Note: Actions cron is always UTC with no DST, so 01:23 here is 01:23 UK in winter (GMT)
+    # and 02:23 during British Summer Time. Re-check actual start/duration on the Actions tab
+    # occasionally and nudge this if it drifts far from the early morning.
+    - cron: "23 1 * * *"
   workflow_dispatch: {}
 
 permissions:
